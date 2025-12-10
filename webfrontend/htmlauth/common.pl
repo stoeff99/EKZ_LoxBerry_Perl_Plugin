@@ -9,6 +9,9 @@ use HTTP::Request::Common qw(POST);
 use Time::Piece;
 use File::Spec;
 use File::Path qw(make_path);
+use FindBin;
+require "$FindBin::Bin/common.pl";
+
 
 # SDK globals under strict
 our ($lbpdatadir, $lbpurl, $lbptemplatedir);
