@@ -32,6 +32,11 @@ sub load_cfg {
   $cfg->{timezone}            //= 'Europe/Zurich';
   $cfg->{retries}             //= 3;
   $cfg->{mqtt_enabled}        //= JSON::PP::true;
+  $cfg->{mqtt_host}           //= 'localhost';
+  $cfg->{mqtt_port}           //= 1883;
+  $cfg->{mqtt_username}       //= '';
+  $cfg->{mqtt_password}       //= '';
+  $cfg->{mqtt_topic_raw}      //= 'ekz/ems/tariffs/raw';
   $cfg->{mqtt_topic_summary}  //= 'ekz/ems/tariffs/now_plus_24h';
   $cfg->{fallback_tariff_name}//= 'electricity_standard';
   $cfg->{output_base}         //= 'ekz_customer_tariffs_now_plus_24h';
@@ -41,6 +46,25 @@ sub load_cfg {
     die "Missing cfg key: $k" unless $cfg->{$k};
   }
   return $cfg;
+}
+
+sub publish_mqtt {
+  my ($cfg, $topic, $payload) = @_;
+
+  return 1 unless $cfg->{mqtt_enabled};
+  return 1 unless $topic;
+
+  eval { require Net::MQTT::Simple; Net::MQTT::Simple->import(); 1 } or die "Net::MQTT::Simple not available";
+  my $server = $cfg->{mqtt_host} . ':' . int($cfg->{mqtt_port} || 1883);
+  my $mqtt   = Net::MQTT::Simple->new($server);
+
+  if ($cfg->{mqtt_username}) {
+    $mqtt->login($cfg->{mqtt_username}, $cfg->{mqtt_password} // '');
+  }
+
+  my $msg = ref($payload) ? encode_json($payload) : $payload;
+  $mqtt->publish($topic => $msg);
+  return 1;
 }
 
 sub tokens_path {
