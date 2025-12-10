@@ -9,7 +9,8 @@ use File::Spec;
 use File::Path qw(make_path);
 
 # Plugin data dir (matches folder name)
-my $LBPDATADIR = '/opt/loxberry/data/plugins/ekz_dynamic_price_perl';
+#my $LBPDATADIR = '/opt/loxberry/data/plugins/ekz_dynamic_price_perl';
+my $LBPDATADIR = $lbpdatadir;
 
 sub load_cfg {
     my $path = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
