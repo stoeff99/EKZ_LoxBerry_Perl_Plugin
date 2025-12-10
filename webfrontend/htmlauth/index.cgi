@@ -8,6 +8,14 @@ use LoxBerry::System;
 # Declare SDK globals under 'strict'
 our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
+# Prefer SDK-provided base URL, otherwise derive from the current script path
+my $BASEURL = $lbpurl;
+if (!$BASEURL) {
+  my $path = $ENV{SCRIPT_NAME} // '';
+  $path =~ s{/[^/]+$}{};   # drop the filename
+  $BASEURL = $path || '.'; # fallback to relative dir
+}
+
 my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
 
@@ -18,12 +26,11 @@ print <<"HTML";
 <body>
   <h2>EKZ Dynamic Price (Perl)</h2>
   <nav>
-    <a href="$lbpurl/start.cgi">Sign in (OIDC)</a> |
-    <a href="$lbpurl/run_rolling_fetch.cgi">Fetch now (rolling 24h)</a> |
-    <a href="$lbpurl/health.cgi">Health</a> |
-    <a href="$lbpurl/settings.cgi">Settings</a>
+    <a href="$BASEURL/start.cgi">Sign in (OIDC)</a> |
+    <a href="$BASEURL/run_rolling_fetch.cgi">Fetch now (rolling 24h)</a> |
+    <a href="$BASEURL/health.cgi">Health</a> |
+    <a href="$BASEURL/settings.cgi">Settings</a>
   </nav>
 </body>
 </html>
 HTML
-
