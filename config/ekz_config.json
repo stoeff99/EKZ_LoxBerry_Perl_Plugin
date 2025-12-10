@@ -3,7 +3,7 @@
   "realm": "myEKZ",
   "client_id": "ems-bowles",
   "client_secret": "REPLACE_WITH_SECRET",
-  "redirect_uri": "https://ems.bowles.ch/admin/loxberry/webfrontend/htmlauth/plugins/ekz_dynamic_price_perl/callback.pl",
+  "redirect_uri": "https://ems.bowles.ch/admin/plugins/ekz_loxberry_perl_plugin/callback.cgi",
   "api_base": "https://test-api.tariffs.ekz.ch/v1",
   "ems_instance_id": "ems-bowles",
   "scope": "openid offline_access",
