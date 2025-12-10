@@ -2,23 +2,28 @@
 use strict;
 use warnings;
 
-use LoxBerry::Web;
+use CGI;
 use LoxBerry::System;
 
-# SDK globals under strict
-our ($lbpurl, $lbptemplatedir);
+# Declare SDK globals under 'strict'
+our ($lbpurl);
 
-# LoxBerry header / footer
-LoxBerry::Web::lbheader("EKZ Dynamic Price", "", "");
+my $q = CGI->new;
+print $q->header('text/html; charset=utf-8');
 
-print qq{
-  <h2>EKZ Dynamic Price</h2>
+print <<"HTML";
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>EKZ Dynamic Price (Perl)</title></head>
+<body>
+  <h2>EKZ Dynamic Price (Perl)</h2>
   <p>
     $lbpurl/start.cgiSign in (OIDC)</a> |
     $lbpurl/run_rolling_fetch.cgiFetch now (rolling 24h)</a> |
-    <a href="$lbpurl/health.cgi> |
+    $lbpurl/health.cgiHealth</a> |
     $lbpurl/settings.cgiSettings</a>
   </p>
-};
+</body>
+</html>
+HTML
 
-LoxBerry::Web::lbfooter();
