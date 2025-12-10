@@ -38,7 +38,10 @@ eval {
   eval { publish_mqtt($cfg, $cfg->{mqtt_topic_raw}, $payload) };
   eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, $doc) };
 
-  print "OK intervals=".(scalar(@$prices))." source=$source\n";
+  print "OK intervals=".(scalar(@$prices))." source=$source\n\n";
+  print "Saved to: $file\n\n";
+  print "Data:\n";
+  print encode_json($doc) . "\n";
   1;
 } or do {
   my $err = $@ || 'unknown error';
