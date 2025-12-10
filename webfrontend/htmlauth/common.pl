@@ -10,7 +10,6 @@ use Time::Piece;
 use File::Spec;
 use File::Path qw(make_path);
 use FindBin;
-require "$FindBin::Bin/common.pl";
 
 
 # SDK globals under strict
@@ -65,6 +64,14 @@ sub publish_mqtt {
   my $msg = ref($payload) ? encode_json($payload) : $payload;
   $mqtt->publish($topic => $msg);
   return 1;
+}
+
+sub _randhex {
+  my ($len) = @_;
+  my @hex = ('0'..'9', 'a'..'f');
+  my $out = '';
+  for (1..($len||16)) { $out .= $hex[int(rand(@hex))]; }
+  return $out;
 }
 
 sub tokens_path {
