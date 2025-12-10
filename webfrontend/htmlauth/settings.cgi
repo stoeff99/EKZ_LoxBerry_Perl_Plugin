@@ -54,6 +54,11 @@ my %defaults = (
   response_mode        => 'query',
   timezone             => 'Europe/Zurich',
   mqtt_enabled         => JSON::PP::true,
+    mqtt_host            => 'localhost',
+    mqtt_port            => 1883,
+    mqtt_username        => '',
+    mqtt_password        => '',
+    mqtt_topic_raw       => 'ekz/ems/tariffs/raw',
   mqtt_topic_summary   => 'ekz/ems/tariffs/now_plus_24h',
   fallback_tariff_name => 'electricity_standard',
   retries              => 3,
@@ -83,11 +88,12 @@ if (-f $cfgfile) {
 # --- Handle POST ---
 my $msg = '';
 if ($q->request_method eq 'POST') {
-    my @fields = qw/
-      auth_server_base realm client_id redirect_uri api_base ems_instance_id
-      scope response_mode timezone mqtt_topic_summary fallback_tariff_name
-      token_store_path
-    /;
+        my @fields = qw/
+            auth_server_base realm client_id redirect_uri api_base ems_instance_id
+            scope response_mode timezone mqtt_topic_raw mqtt_topic_summary
+            mqtt_host mqtt_port mqtt_username
+            fallback_tariff_name token_store_path
+        /;
 
     for my $f (@fields) {
         my $v = $q->param($f);
@@ -97,13 +103,21 @@ if ($q->request_method eq 'POST') {
     # mqtt_enabled checkbox
     $cfg->{mqtt_enabled} = $q->param('mqtt_enabled') ? JSON::PP::true : JSON::PP::false;
 
-    # client_secret: only update if non-empty provided
+        # client_secret: only update if non-empty provided
     if (defined $q->param('client_secret')) {
       my $newsec = $q->param('client_secret');
       if (defined $newsec && $newsec ne '') {
         $cfg->{client_secret} = $newsec;
       }
     }
+
+        # mqtt_password: only update if non-empty provided
+        if (defined $q->param('mqtt_password')) {
+            my $newpw = $q->param('mqtt_password');
+            if (defined $newpw && $newpw ne '') {
+                $cfg->{mqtt_password} = $newpw;
+            }
+        }
 
     # write file
     if (open my $fh, '>', $cfgfile) {
@@ -143,6 +157,11 @@ print '</fieldset>';
 print '<fieldset><legend>MQTT</legend>';
 my $mqtt_checked = $cfg->{mqtt_enabled} ? ' checked' : '';
 print '<label><input type="checkbox" name="mqtt_enabled"' . $mqtt_checked . '> Enable MQTT</label>';
+print '<label>Broker host<br><input name="mqtt_host" type="text" value="' . $cfg->{mqtt_host} . '"></label>';
+print '<label>Broker port<br><input name="mqtt_port" type="text" value="' . $cfg->{mqtt_port} . '"></label>';
+print '<label>Username (optional)<br><input name="mqtt_username" type="text" value="' . $cfg->{mqtt_username} . '"></label>';
+print '<label>Password (optional)<br><input type="password" name="mqtt_password" placeholder="(enter to update)"></label>';
+print '<label>Raw topic<br><input name="mqtt_topic_raw" type="text" size="50" value="' . $cfg->{mqtt_topic_raw} . '"></label>';
 print '<label>Summary topic<br><input name="mqtt_topic_summary" type="text" size="50" value="' . $cfg->{mqtt_topic_summary} . '"></label>';
 print '<label>Fallback tariff name<br><input name="fallback_tariff_name" type="text" value="' . $cfg->{fallback_tariff_name} . '"></label>';
 print '</fieldset>';
