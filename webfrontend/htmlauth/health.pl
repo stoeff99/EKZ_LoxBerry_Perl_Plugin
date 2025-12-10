@@ -5,7 +5,8 @@ use File::Spec;
 
 print "Content-Type: text/plain; charset=utf-8\n\n";
 
-my $lbpdatadir = '/opt/loxberry/data/plugins/ekz_dynamic_price_perl';
+#my $lbpdatadir = '/opt/loxberry/data/plugins/ekz_dynamic_price_perl';
+my $LBPDATADIR = $lbpdatadir;  
 my $cfg_path = File::Spec->catfile($lbpdatadir, 'ekz_config.json');
 my $tok_plugin = File::Spec->catfile($lbpdatadir, 'tokens.json');
 my $tok_central = '/opt/loxberry/data/ekz/tokens.json';
