@@ -10,6 +10,19 @@ require "$FindBin::Bin/common.pl";
 
 our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
+# Local fallback implementation of _randhex in case the function is not
+# provided by any included library. Returns a hex string of $len bytes
+# (e.g. _randhex(16) => 32 hex chars). Safe and small.
+sub _randhex {
+  my ($len) = @_;
+  $len ||= 16;    # default bytes
+  my $s = '';
+  for (1 .. $len) {
+    $s .= sprintf "%02x", int(rand(256));
+  }
+  return $s;
+}
+
 my $q = CGI->new;
 print $q->redirect( -uri => _build_auth_url() );
 exit;
