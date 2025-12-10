@@ -14,6 +14,14 @@ use FindBin;
 # Declare SDK globals so 'strict' allows them
 our ($lbpurl, $lbpdatadir, $lbptemplatedir);
 
+# Use SDK base URL if present; otherwise derive from current script path
+my $BASEURL = $lbpurl;
+if (!$BASEURL) {
+    my $path = $ENV{SCRIPT_NAME} // '';
+    $path =~ s{/[^/]+$}{};
+    $BASEURL = $path || '.';
+}
+
 my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
 
@@ -145,6 +153,6 @@ print '<small>Example: <code>/opt/loxberry/data/ekz/tokens.json</code></small></
 print '</fieldset>';
 
 print '<p class="actions"><button type="submit">Save</button> ';
-print '<a href="' . $LBPURL . '/index.html">Back</a></p>';
+print '<a href="' . $BASEURL . '/index.cgi">Back</a></p>';
 
 print '</form></body></html>';
