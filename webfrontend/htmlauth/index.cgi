@@ -6,7 +6,7 @@ use CGI;
 use LoxBerry::System;
 
 # Declare SDK globals under 'strict'
-our ($lbpurl);
+our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
 my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
