@@ -9,7 +9,8 @@ use File::Path qw(make_path);
 my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
 
-my $LBPDATADIR = '/opt/loxberry/data/plugins/ekz_dynamic_price_perl';
+#my $LBPDATADIR = '/opt/loxberry/data/plugins/ekz_dynamic_price_perl';
+my $LBPDATADIR = $lbpdatadir; 
 my $cfgfile = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
 make_path($LBPDATADIR) unless -d $LBPDATADIR;
 
@@ -18,7 +19,7 @@ my %defaults = (
   realm              => 'myEKZ',
   client_id          => 'ems-bowles',
   client_secret      => '',
-  redirect_uri       => 'https://ems.bowles.ch/admin/loxberry/webfrontend/htmlauth/plugins/ekz_dynamic_price_perl/callback.pl',
+  redirect_uri       => 'https://ems.bowles.ch/admin/loxberry/webfrontend/htmlauth/plugins/ekz_loxberry_perl_plugin/callback.pl',
   api_base           => 'https://test-api.tariffs.ekz.ch/v1',
   ems_instance_id    => 'ems-bowles',
   scope              => 'openid',
