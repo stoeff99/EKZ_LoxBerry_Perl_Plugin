@@ -2,18 +2,25 @@
 use strict;
 use warnings;
 
-use LoxBerry::System;            # provides $lbpdatadir, $lbpurl, etc.
+use LoxBerry::System;            # import SDK globals (paths/urls)
 use CGI;
 use JSON::PP;
 use File::Spec;
 use File::Path qw(make_path);
+use FindBin;
+# Optional: show errors in browser while debugging
+# use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
+
+# Declare SDK globals so 'strict' allows them
+our ($lbpurl, $lbpdatadir, $lbptemplatedir);
 
 my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
 
-# --- SDK globals (from LoxBerry::System) ---
+# Use the SDK globals
 my $LBPDATADIR = $lbpdatadir;    # e.g. /opt/loxberry/data/plugins/<folder>
 my $LBPURL     = $lbpurl;        # e.g. /admin/loxberry/webfrontend/htmlauth/plugins/<folder>
+
 
 # --- Ensure data dir exists ---
 eval { make_path($LBPDATADIR) unless -d $LBPDATADIR; 1 } or do {
