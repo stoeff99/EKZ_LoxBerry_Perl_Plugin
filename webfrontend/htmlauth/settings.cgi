@@ -2,7 +2,7 @@
 use strict;
 use warnings;
 
-use LoxBerry::System;            # SDK: lbpdatadir(), lbpurl(), etc.  (Perl SDK docs) 
+use LoxBerry::System;            # provides $lbpdatadir, $lbpurl, etc.
 use CGI;
 use JSON::PP;
 use File::Spec;
@@ -11,20 +11,22 @@ use File::Path qw(make_path);
 my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
 
-# SDK-resolved paths (no hard-coding)
-my $LBPDATADIR = LoxBerry::System::lbpdatadir();   # /opt/loxberry/data/plugins/<folder>
-my $LBPURL     = LoxBerry::System::lbpurl();       # /admin/loxberry/webfrontend/htmlauth/plugins/<folder>
+# --- SDK globals (from LoxBerry::System) ---
+my $LBPDATADIR = $lbpdatadir;    # e.g. /opt/loxberry/data/plugins/<folder>
+my $LBPURL     = $lbpurl;        # e.g. /admin/loxberry/webfrontend/htmlauth/plugins/<folder>
 
-# Ensure data dir exists
+# --- Ensure data dir exists ---
 eval { make_path($LBPDATADIR) unless -d $LBPDATADIR; 1 } or do {
     print "<p style='color:#b00'>Failed to create data dir $LBPDATADIR: $@</p>";
     exit;
 };
 
-# Config file
+# --- Config file path ---
 my $cfgfile = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
 
-# Defaults (note redirect_uri points to your plugin's auth URL, callback.cgi)
+# --- Defaults ---
+# NOTE: If you haven't renamed callback.pl -> callback.cgi yet, either rename it
+# or temporarily change the default below back to .../callback.pl.
 my %defaults = (
   auth_server_base     => 'https://login-test.ekz.ch/auth',
   realm                => 'myEKZ',
@@ -43,7 +45,7 @@ my %defaults = (
   token_store_path     => ''
 );
 
-# Load existing config (merge with defaults)
+# --- Load config (merge with defaults) ---
 my $cfg = { %defaults };
 if (-f $cfgfile) {
     if (open my $fh, '<', $cfgfile) {
@@ -55,6 +57,7 @@ if (-f $cfgfile) {
             print "<p style='color:#b00'>Invalid JSON in $cfgfile: $@</p>";
         } elsif ($loaded && ref $loaded eq 'HASH') {
             $cfg = { %defaults, %$loaded };
+            # Normalize any old .pl redirect to .cgi
             $cfg->{redirect_uri} =~ s/callback\.pl/callback.cgi/;
         }
     } else {
@@ -62,7 +65,7 @@ if (-f $cfgfile) {
     }
 }
 
-# Handle POST
+# --- Handle POST ---
 my $msg = '';
 if ($q->request_method eq 'POST') {
     my @fields = qw/
@@ -72,8 +75,8 @@ if ($q->request_method eq 'POST') {
     /;
 
     for my $f (@fields) {
-      my $v = $q->param($f);
-      $cfg->{$f} = defined $v ? $v : $cfg->{$f};
+        my $v = $q->param($f);
+        $cfg->{$f} = defined $v ? $v : $cfg->{$f};
     }
 
     # mqtt_enabled checkbox
@@ -87,37 +90,24 @@ if ($q->request_method eq 'POST') {
       }
     }
 
-    # Write file
+    # write file
     if (open my $fh, '>', $cfgfile) {
-      print $fh encode_json($cfg);
-      close $fh;
-      chmod 0640, $cfgfile;
-      $msg = "<div style='color:#080'>Settings saved.</div>";
+        print $fh encode_json($cfg);
+        close $fh;
+        chmod 0640, $cfgfile;
+        $msg = "<div style='color:#080'>Settings saved.</div>";
     } else {
-      $msg = "<div style='color:#b00'>Error: cannot write $cfgfile: $!</div>";
+        $msg = "<div style='color:#b00'>Error: cannot write $cfgfile: $!</div>";
     }
 }
 
-# Render (plain prints, no heredocs)
-print <<"CSSSTART";
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>EKZ Settings</title>
-  <style>
-    body { font-family: system-ui, Arial, sans-serif; max-width: 780px; margin: 1.2rem auto; }
-    fieldset { margin-bottom: 1rem; }
-    label { display: block; margin: .4rem 0; }
-    input[type=text], input[type=password] { width: 100%; max-width: 780px; }
-    button { padding: .4rem .9rem; }
-    .actions { margin-top: 1rem; }
-  </style>
-</head>
-<body>
-  <h2>EKZ Settings</h2>
-CSSSTART
-
+# --- Render HTML (no heredocs) ---
+print '<!doctype html><html><head><meta charset="utf-8"><title>EKZ Settings</title>';
+print '<style>body{font-family:system-ui,Arial,sans-serif;max-width:780px;margin:1.2rem auto}';
+print 'fieldset{margin-bottom:1rem}label{display:block;margin:.4rem 0}';
+print 'input[type=text],input[type=password]{width:100%;max-width:780px}';
+print 'button{padding:.4rem .9rem}.actions{margin-top:1rem}</style></head><body>';
+print '<h2>EKZ Settings</h2>';
 print $msg if $msg;
 
 print '<form method="post">';
@@ -147,11 +137,7 @@ print '<label>Token store path (optional)<br><input name="token_store_path" type
 print '<small>Example: <code>/opt/loxberry/data/ekz/tokens.json</code></small></label>';
 print '</fieldset>';
 
-print '<p class="actions">';
-print '<button type="submit">Save</button> ';
-print '<a href="' . $LBPURL . '/index.html">Back</a>';
-print '</p>';
+print '<p class="actions"><button type="submit">Save</button> ';
+print '<a href="' . $LBPURL . '/index.html">Back</a></p>';
 
-print '</form>';
-
-print '</body></html>';
+print '</form></body></html>';
