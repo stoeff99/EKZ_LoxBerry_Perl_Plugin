@@ -18,31 +18,53 @@ our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 # Plugin data dir via SDK (no hard-coded paths)
 my $LBPDATADIR = $lbpdatadir;
 
+# Derive a base URL fallback if $lbpurl is not set
+my $BASEURL = $lbpurl;
+if (!$BASEURL) {
+  my $path = $ENV{SCRIPT_NAME} // '';
+  $path =~ s{/[^/]+$}{};
+  $BASEURL = $path || '';
+}
+
 sub load_cfg {
   my $path = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
-  open my $fh, '<', $path or die "Config not found: $path";
-  local $/ = undef;
-  my $raw = <$fh>; close $fh;
-  my $cfg = decode_json($raw);
+  my $cfg = {};
+  if (-f $path) {
+    open my $fh, '<', $path or die "Config not found: $path";
+    local $/ = undef;
+    my $raw = <$fh>; close $fh;
+    $cfg = decode_json($raw);
+  }
+
+  my %defaults = (
+    auth_server_base     => 'https://login-test.ekz.ch/auth',
+    realm                => 'myEKZ',
+    client_id            => 'ems-bowles',
+    client_secret        => $cfg->{client_secret} // '',
+    redirect_uri         => ($cfg->{redirect_uri} // ($BASEURL ? "$BASEURL/callback.cgi" : '')),
+    api_base             => 'https://test-api.tariffs.ekz.ch/v1',
+    ems_instance_id      => 'ems-bowles',
+    scope                => 'openid',
+    response_mode        => 'query',
+    timezone             => 'Europe/Zurich',
+    retries              => 3,
+    mqtt_enabled         => JSON::PP::true,
+    mqtt_host            => 'localhost',
+    mqtt_port            => 1883,
+    mqtt_username        => '',
+    mqtt_password        => '',
+    mqtt_topic_raw       => 'ekz/ems/tariffs/raw',
+    mqtt_topic_summary   => 'ekz/ems/tariffs/now_plus_24h',
+    fallback_tariff_name => 'electricity_standard',
+    output_base          => 'ekz_customer_tariffs_now_plus_24h',
+    token_store_path     => ''
+  );
+
+  $cfg = { %defaults, %$cfg };
 
   # defaults
-  $cfg->{realm}               //= 'myEKZ';
-  $cfg->{response_mode}       //= 'query';
-  $cfg->{timezone}            //= 'Europe/Zurich';
-  $cfg->{retries}             //= 3;
-  $cfg->{mqtt_enabled}        //= JSON::PP::true;
-  $cfg->{mqtt_host}           //= 'localhost';
-  $cfg->{mqtt_port}           //= 1883;
-  $cfg->{mqtt_username}       //= '';
-  $cfg->{mqtt_password}       //= '';
-  $cfg->{mqtt_topic_raw}      //= 'ekz/ems/tariffs/raw';
-  $cfg->{mqtt_topic_summary}  //= 'ekz/ems/tariffs/now_plus_24h';
-  $cfg->{fallback_tariff_name}//= 'electricity_standard';
-  $cfg->{output_base}         //= 'ekz_customer_tariffs_now_plus_24h';
-  $cfg->{token_store_path}    //= '';
-
-  for my $k (qw/auth_server_base client_id client_secret redirect_uri api_base ems_instance_id scope/) {
-    die "Missing cfg key: $k" unless $cfg->{$k};
+  for my $k (qw/auth_server_base client_id redirect_uri api_base ems_instance_id scope realm/) {
+    die "Missing cfg key: $k" unless defined $cfg->{$k} && $cfg->{$k} ne '';
   }
   return $cfg;
 }
