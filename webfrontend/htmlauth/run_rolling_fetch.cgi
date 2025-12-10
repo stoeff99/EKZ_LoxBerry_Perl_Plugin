@@ -22,15 +22,21 @@ eval {
   my $prices = $payload->{prices} // [];
   my $file   = File::Spec->catfile($lbpdatadir, $cfg->{output_base}.'.json');
 
-  open my $fh, '>', $file or die "Cannot write $file: $!";
-  print $fh encode_json({
+  my $doc = {
     from            => $start_iso,
     to              => $end_iso,
     source          => $source,
     rows            => $prices,
     interval_count  => scalar(@$prices),
-  });
+  };
+
+  open my $fh, '>', $file or die "Cannot write $file: $!";
+  print $fh encode_json($doc);
   close $fh;
+
+  # Publish MQTT (raw payload and summary)
+  eval { publish_mqtt($cfg, $cfg->{mqtt_topic_raw}, $payload) };
+  eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, $doc) };
 
   print "OK intervals=".(scalar(@$prices))." source=$source\n";
   1;
@@ -38,3 +44,4 @@ eval {
   my $err = $@ || 'unknown error';
   print "ERROR: $err\n";
 };
+
