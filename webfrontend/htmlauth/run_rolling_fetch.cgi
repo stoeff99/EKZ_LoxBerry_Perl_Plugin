@@ -1,4 +1,8 @@
 #!/usr/bin/perl
+
+use FindBin;
+require "$FindBin::Bin/common.pl";
+
 use strict;
 use warnings;
 use JSON::PP;
