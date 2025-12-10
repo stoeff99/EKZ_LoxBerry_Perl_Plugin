@@ -4,6 +4,7 @@ use warnings;
 
 use LoxBerry::System;
 use CGI;
+use CGI::Carp qw(fatalsToBrowser);
 use JSON::PP;
 use LWP::UserAgent;
 use HTTP::Request::Common qw(POST);
@@ -55,5 +56,24 @@ my $persist = {
 };
 save_tokens($persist, $cfg);
 
-# back to your plugin UI
-print $q->redirect("$lbpurl/index.html");
+# Build redirect URL: replace /callback.cgi with /index.cgi
+my $redirect_url = $cfg->{redirect_uri};
+if (defined $redirect_url && $redirect_url ne '') {
+  $redirect_url =~ s{/callback\.cgi$}{/index.cgi};
+  
+  # Output HTML with meta-refresh redirect (safer than $q->redirect())
+  print $q->header('text/html; charset=utf-8');
+  print '<!DOCTYPE html>' . "\n";
+  print '<html><head>' . "\n";
+  print '<meta charset="utf-8">' . "\n";
+  print '<title>Login Success</title>' . "\n";
+  print '<meta http-equiv="refresh" content="2; url=' . $redirect_url . '">' . "\n";
+  print '</head><body>' . "\n";
+  print '<h2>Login Successful!</h2>' . "\n";
+  print '<p>Redirecting to plugin UI...</p>' . "\n";
+  print '<p><a href="' . $redirect_url . '">Click here if not redirected</a></p>' . "\n";
+  print '</body></html>' . "\n";
+} else {
+  print $q->header('text/plain');
+  print "ERROR: redirect_uri not configured\n";
+}
