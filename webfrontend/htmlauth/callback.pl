@@ -48,4 +48,9 @@ my $persist = {
 };
 save_tokens($persist, $cfg);
 
-print $q->redirect('/admin/loxberry/webfrontend/htmlauth/plugins/ekz_dynamic_price_perl/index.html');
+# Instead of hard-coded 
+#print $q->redirect('/admin/loxberry/webfrontend/htmlauth/plugins/ekz_dynamic_price_perl/index.html');
+
+# redirect to your installed plugin's web path, preferably to index.cgi:
+print $q->redirect("$lbpurl/index.cgi");
+
