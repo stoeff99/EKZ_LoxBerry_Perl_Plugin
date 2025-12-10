@@ -1,12 +1,18 @@
 #!/usr/bin/perl
+
 use strict;
 use warnings;
+
+use LoxBerry::System;
 use JSON::PP;
 use LWP::UserAgent;
 use HTTP::Request::Common qw(POST);
 use Time::Piece;
 use File::Spec;
 use File::Path qw(make_path);
+
+# Declare SDK globals for strict
+our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
 # Plugin data dir (matches folder name)
 #my $LBPDATADIR = '/opt/loxberry/data/plugins/ekz_dynamic_price_perl';
