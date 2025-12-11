@@ -2,8 +2,13 @@
 use strict;
 use warnings;
 
+use CGI::Carp qw(fatalsToBrowser);
+
 use LoxBerry::System;
 use FindBin;
+
+warn "run_rolling_fetch.cgi: Starting\n";
+
 require "$FindBin::Bin/common.pl";
 
 use JSON::PP;
@@ -12,6 +17,8 @@ use File::Spec;
 our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
 print "Content-Type: text/plain; charset=utf-8\n\n";
+
+warn "run_rolling_fetch.cgi: Headers sent, lbpdatadir=$lbpdatadir\n";
 
 eval {
   my $cfg = load_cfg();
@@ -38,7 +45,10 @@ eval {
   eval { publish_mqtt($cfg, $cfg->{mqtt_topic_raw}, $payload) };
   eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, $doc) };
 
-  print "OK intervals=".(scalar(@$prices))." source=$source\n";
+  print "OK intervals=".(scalar(@$prices))." source=$source\n\n";
+  print "Saved to: $file\n\n";
+  print "Data:\n";
+  print encode_json($doc) . "\n";
   1;
 } or do {
   my $err = $@ || 'unknown error';

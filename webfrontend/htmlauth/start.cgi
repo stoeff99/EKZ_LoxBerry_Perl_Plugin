@@ -5,6 +5,7 @@ use warnings;
 use LoxBerry::System;            # SDK globals ($lbpdatadir, $lbpurl, $lbptemplatedir)
 use CGI;
 use JSON::PP;
+use URI::Escape qw(uri_escape_utf8);
 use FindBin;
 require "$FindBin::Bin/common.pl";
 
@@ -31,6 +32,11 @@ sub _build_auth_url {
     ? $cfg->{redirect_uri}
     : "$lbpurl/callback.cgi";
 
+  # ensure redirect_uri is absolute with scheme (Keycloak rejects bare hostnames)
+  if ($redirect_uri !~ m{^https?://}i) {
+    $redirect_uri = "https://$redirect_uri";
+  }
+
   my %p = (
     client_id     => $cfg->{client_id},
     response_type => 'code',
@@ -40,6 +46,7 @@ sub _build_auth_url {
     state         => $state,
     nonce         => $nonce,
   );
-  my $qs = join '&', map { $_.'='.$p{$_} } keys %p;
+
+  my $qs = join '&', map { $_ . '=' . uri_escape_utf8($p{$_}) } sort keys %p;
   return "$auth?$qs";
 }

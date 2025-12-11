@@ -41,7 +41,7 @@ sub load_cfg {
     realm                => 'myEKZ',
     client_id            => 'ems-bowles',
     client_secret        => $cfg->{client_secret} // '',
-    redirect_uri         => ($cfg->{redirect_uri} // ($BASEURL ? "$BASEURL/callback.cgi" : '')),
+    redirect_uri         => ($cfg->{redirect_uri} // 'https://ems.bowles.ch'),
     api_base             => 'https://test-api.tariffs.ekz.ch/v1',
     ems_instance_id      => 'ems-bowles',
     scope                => 'openid',
@@ -57,7 +57,8 @@ sub load_cfg {
     mqtt_topic_summary   => 'ekz/ems/tariffs/now_plus_24h',
     fallback_tariff_name => 'electricity_standard',
     output_base          => 'ekz_customer_tariffs_now_plus_24h',
-    token_store_path     => ''
+    token_store_path     => '',
+    fetch_schedule       => '1'  # 1=once/day, 2=twice/day, 12=every 2h, 24=hourly
   );
 
   $cfg = { %defaults, %$cfg };

@@ -78,5 +78,19 @@ touch "$PLOG/install.log"
 chmod 0644 "$PLOG/install.log"
 chown loxberry:loxberry "$PLOG/install.log"
 
+# -------- Setup initial cron job (default: 1x per day at 18:05) --------
+CRON_FILE="$LBHOMEDIR/system/cron/cron.daily/$PDIR"
+echo "<INFO> Creating initial cron job: $CRON_FILE"
+cat > "$CRON_FILE" << 'CRONEOF'
+#!/bin/bash
+# EKZ Dynamic Price - Daily fetch at 18:05
+HOUR=$(date +%H)
+MINUTE=$(date +%M)
+if [[ $MINUTE == "05" && $HOUR == "18" ]]; then
+  curl -s http://localhost/admin/plugins/ekz_loxberry_perl_plugin/run_rolling_fetch.cgi >/dev/null 2>&1
+fi
+CRONEOF
+chmod 0755 "$CRON_FILE"
+
 echo "<OK> postinstall.sh completed."
 exit 0

@@ -2,21 +2,37 @@
 use strict;
 use warnings;
 
+# Enable full error reporting to Apache error log
+BEGIN {
+    $SIG{__DIE__} = sub { 
+        require Carp; 
+        Carp::confess(@_);
+    };
+}
+
 use LoxBerry::System;
 use CGI;
+use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use JSON::PP;
 use LWP::UserAgent;
 use HTTP::Request::Common qw(POST);
 use FindBin;
+
+# Log to Apache error log for debugging
+warn "callback.cgi: Starting execution\n";
+
 require "$FindBin::Bin/common.pl";
 
 our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
 my $q = CGI->new;
+warn "callback.cgi: CGI object created\n";
 
 my $error = $q->param('error');
 my $state = $q->param('state');
 my $code  = $q->param('code');
+
+warn "callback.cgi: Received params - error=" . ($error // 'none') . " state=" . ($state // 'none') . " code=" . (defined $code ? 'present' : 'none') . "\n";
 
 if ($error) { print $q->header('text/plain'); print "OIDC error: $error\n"; exit; }
 unless ($state && $code) { print $q->header('text/plain'); print "Missing state or code\n"; exit; }
@@ -54,6 +70,32 @@ my $persist = {
   expires_at    => time() + int($tok->{expires_in} // 300),
 };
 save_tokens($persist, $cfg);
+warn "callback.cgi: Tokens saved successfully\n";
 
-# back to your plugin UI
-print $q->redirect("$lbpurl/index.html");
+# Build redirect URL: replace /callback.cgi with /index.cgi
+my $redirect_url = $cfg->{redirect_uri};
+warn "callback.cgi: redirect_uri from config = " . ($redirect_url // 'undef') . "\n";
+
+if (defined $redirect_url && $redirect_url ne '') {
+  $redirect_url =~ s{/callback\.cgi$}{/index.cgi};
+  warn "callback.cgi: Final redirect_url = $redirect_url\n";
+  
+  # Output HTML with meta-refresh redirect (safer than $q->redirect())
+  warn "callback.cgi: Sending HTML response\n";
+  print $q->header('text/html; charset=utf-8');
+  print '<!DOCTYPE html>' . "\n";
+  print '<html><head>' . "\n";
+  print '<meta charset="utf-8">' . "\n";
+  print '<title>Login Success</title>' . "\n";
+  print '<meta http-equiv="refresh" content="2; url=' . $redirect_url . '">' . "\n";
+  print '</head><body>' . "\n";
+  print '<h2>Login Successful!</h2>' . "\n";
+  print '<p>Redirecting to plugin UI...</p>' . "\n";
+  print '<p><a href="' . $redirect_url . '">Click here if not redirected</a></p>' . "\n";
+  print '</body></html>' . "\n";
+  warn "callback.cgi: HTML response sent successfully\n";
+} else {
+  warn "callback.cgi: ERROR - redirect_uri not configured\n";
+  print $q->header('text/plain');
+  print "ERROR: redirect_uri not configured\n";
+}

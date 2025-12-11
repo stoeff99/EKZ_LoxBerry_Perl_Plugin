@@ -1,14 +1,41 @@
-<!doctype html>
-<html>
-<head><meta charset="utf-8"><title>EKZ Dynamic Price (Perl)</title></head>
-<body>
-<h2>EKZ Dynamic Price (Perl)</h2>
-<p>
-  <a href="start.cgi">Sign in (OIDC)</a> |
-  <a href="run_rolling_fetch.cgi">Fetch now (rolling 24h)</a> |
-  <a href="health.cgi">Health</a> |
-  <a href="settings.cgi">Settings</a>
-</p>
-</body>
-</html>
+<!-- EKZ Dynamic Price Plugin Template -->
+
+<TMPL_IF FORM_MAIN>
+	<div class="wide">
+		<h3><TMPL_VAR COMMON.LABEL_MAIN></h3>
+		
+		<div style="margin: 20px 0;">
+			<h4>Authentication</h4>
+			<p><a href="start.cgi" class="btn btn-default">Sign in with EKZ (OIDC)</a></p>
+			<p class="hint">Authenticate with your EKZ credentials to access tariff data.</p>
+		</div>
+		
+		<div style="margin: 20px 0;">
+			<h4>Fetch Tariff Data</h4>
+			<p><a href="run_rolling_fetch.cgi" class="btn btn-default" target="_blank">Fetch Now (Rolling 24h)</a></p>
+			<p class="hint">Downloads current tariff data for the next 24 hours starting from 18:00 today.</p>
+		</div>
+		
+		<div style="margin: 20px 0;">
+			<h4>System Health</h4>
+			<p><a href="health.cgi" class="btn btn-default" target="_blank">Check Health</a></p>
+			<p class="hint">View plugin status and configuration details.</p>
+		</div>
+		
+	</div>
+</TMPL_IF>
+
+<TMPL_IF FORM_SETTINGS>
+	<div class="wide">
+		<h3>Settings</h3>
+		<p>Please use the <a href="settings.cgi">Settings page</a> to configure the plugin.</p>
+	</div>
+</TMPL_IF>
+
+<TMPL_IF FORM_LOG>
+	<div class="wide">
+		<h3>Logfiles</h3>
+		<TMPL_VAR LOGLIST>
+	</div>
+</TMPL_IF>
 
