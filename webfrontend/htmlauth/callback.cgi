@@ -21,7 +21,13 @@ my $state = $q->param('state');
 my $code  = $q->param('code');
 
 if ($error) { print $q->header('text/plain'); print "OIDC error: $error\n"; exit; }
-unless ($state && $code) { print $q->header('text/plain'); print "Missing state or code\n"; exit; }
+unless ($state && $code) {
+  # Not an OAuth callback — likely a stray visit. Route to index.
+  my $index = ($lbpurl && $lbpurl ne '') ? "$lbpurl/index.cgi" : "index.cgi";
+  print $q->redirect($index);
+  exit;
+}
+#unless ($state && $code) { print $q->header('text/plain'); print "Missing state or code\n"; exit; }
 
 # validate state (and get nonce) from file
 my $stpath = "$lbpdatadir/oidc_state.json";
