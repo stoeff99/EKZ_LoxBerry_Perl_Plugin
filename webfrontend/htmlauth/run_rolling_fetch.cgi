@@ -50,11 +50,38 @@ my $ok = eval {
     my $access = ensure_access_token($cfg);      # may die -> caught by eval
     my ($payload, $source) = fetch_window($cfg, $access, $start_iso, $end_iso);
 
+    # Defensive normalization: ensure $payload is a HASH ref and $source is a string label
+    if (!defined $payload || ref($payload) ne 'HASH') {
+      # If the values were accidentally swapped by fetch_window, fix it:
+      if (defined $source && ref($source) eq 'HASH') {
+        ($payload, $source) = ($source, $payload);
+      }
+    }
+
+    # If still not a hashref, return a helpful error (and log it)
+    unless (defined $payload && ref($payload) eq 'HASH') {
+      my $ptype = defined $payload ? ref($payload) || 'SCALAR' : 'UNDEF';
+      my $stype = defined $source  ? ref($source)  || 'SCALAR' : 'UNDEF';
+      my $msg = "Unexpected response from fetch_window: payload_type=$ptype, source_type=$stype, payload_value="
+                . (defined $payload ? "$payload" : '<undef>') . ", source_value=" . (defined $source ? "$source" : '<undef>');
+      # log
+      eval {
+        my $logfile = File::Spec->catfile($lbpdatadir, 'fetch.log');
+        if (open my $fh, '>>', $logfile) {
+          print $fh scalar(localtime) . " - run_rolling_fetch: $msg\n";
+          close $fh;
+        }
+        1;
+      };
+      print encode_json({ error => 'invalid_fetch_response', message => $msg });
+      return 1;
+    }
+
     # Return JSON
     my $out = {
       from           => $start_iso,
       to             => $end_iso,
-      source         => $source,
+      source         => $source // 'unknown',
       rows           => $payload->{rows} // [],
       interval_count => $payload->{interval_count} // 0,
     };
