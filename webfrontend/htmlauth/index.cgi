@@ -19,17 +19,26 @@ if (!$BASEURL) {
 }
 
 my $q = CGI->new;
-
-# Load config and ensure EMS link is established
 my $cfg = load_cfg();
-my ($link_status, $link_url) = ensure_linked($cfg);
-if ($link_status eq 'link_required' && $link_url) {
-  # Redirect the customer to EKZ's linking flow
-  print $q->redirect($link_url);
-  exit;
-}
+
+# Decide what to do based on sign-in and link status
+my $signed_in = has_tokens($cfg);
+my ($link_status, $link_url, $err) = try_ensure_linked($cfg) if $signed_in;
 
 print $q->header('text/html; charset=utf-8');
+
+my $status_line = !$signed_in       ? 'Not signed in'
+                 : $link_status eq 'linked' ? 'Linked'
+                 : $link_status eq 'link_required' ? 'Link required'
+                 : 'Unknown';
+
+my $linking_note = '';
+if ($signed_in && defined $link_status && $link_status eq 'link_required' && $link_url) {
+  $linking_note = qq{<p><a href="$link_url">Complete EKZ linking</a></p>};
+} elsif (defined $err && $err ne '') {
+  # Optional: show a gentle error (avoid crashing the page)
+  $linking_note = qq{<p style="color:#b00">Link check error: } . CGI::escapeHTML($err) . qq{</p>};
+}
 
 print <<"HTML";
 <!doctype html>
@@ -47,7 +56,9 @@ print <<"HTML";
     <a href="$BASEURL/health.cgi">Health</a> |
     <a href="$BASEURL/settings.cgi">Settings</a>
   </nav>
-  <p>EMS link status: $link_status</p>
+
+  <p>Status: $status_line</p>
+  $linking_note
 </body>
 </html>
 HTML
