@@ -7,6 +7,7 @@ use CGI::Carp qw(fatalsToBrowser);
 
 use CGI;
 use JSON::PP;
+use File::Spec;
 use LoxBerry::System;
 use FindBin;
 require "$FindBin::Bin/common.pl";
@@ -73,16 +74,15 @@ my $ok = eval {
         }
         1;
       };
-    
-    # Persist to data dir (best-effort)
-    eval { save_tariffs_json($cfg, $payload, $source, $start_iso, $end_iso); 1 };
-
-
       print encode_json({ error => 'invalid_fetch_response', message => $msg });
       return 1;
     }
 
-    # Return JSON
+    # SUCCESS PATH: persist and publish full payload
+    eval { save_tariffs_json($cfg, $payload, $source, $start_iso, $end_iso); 1 };
+    eval { publish_tariffs_to_mqtt($cfg, $payload, $source, $start_iso, $end_iso); 1 };
+
+    # Return JSON to caller
     my $out = {
       from           => $start_iso,
       to             => $end_iso,
