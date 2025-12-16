@@ -28,7 +28,7 @@ print <<"HTML";
   <link rel="stylesheet" href="$BASEURL/style.css">
 </head>
 <body id="ekz-plugin" class="plugincontent">
-  <h2>EKZ Dynamic Price (Perl)</h2>
+  <h2>EKZ Dynamic Price</h2>
   <nav>
     <a href="$BASEURL/start.cgi">Sign in (OIDC)</a> |
     <a href="$BASEURL/run_rolling_fetch.cgi">Fetch now (rolling 24h)</a> |
