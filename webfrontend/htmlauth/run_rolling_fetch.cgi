@@ -19,6 +19,18 @@ my $q = CGI->new;
 # We'll always send JSON content-type (even on errors)
 print $q->header('application/json; charset=utf-8');
 
+# Logger (plugin log folder)
+my $log = LoxBerry::Log->new(
+  name       => 'fetch',
+  filename   => "$lbplogdir/fetch.log",
+  append     => 1,
+  loglevel   => 6,   # INFO
+  addtime    => 1,
+  stderr     => 0,
+  nosession  => 1,
+);
+LOGSTART "run_rolling_fetch started";
+
 # Run the main logic inside an eval to capture any die() and return JSON error details
 my $ok = eval {
     my $cfg = load_cfg();
