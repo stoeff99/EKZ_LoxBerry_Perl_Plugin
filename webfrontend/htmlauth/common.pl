@@ -71,52 +71,102 @@ sub load_cfg {
 }
 
 # --------------------------
-# MQTT publish helper
+# MQTT publish helper with fallback for insecure password login
 # --------------------------
+
 sub publish_mqtt {
   my ($cfg, $topic, $payload) = @_;
 
   return 1 unless $cfg && $cfg->{mqtt_enabled};
   return 1 unless $topic;
 
-  eval { require Net::MQTT::Simple; Net::MQTT::Simple->import(); 1 } or die "Net::MQTT::Simple not available";
-  my $server = ($cfg->{mqtt_host} // 'localhost') . ':' . int($cfg->{mqtt_port} || 1883);
-  my $mqtt   = Net::MQTT::Simple->new($server);
-
-  if ($cfg->{mqtt_username}) {
-    $mqtt->login($cfg->{mqtt_username}, $cfg->{mqtt_password} // '');
-  }
-
-  my $msg = ref($payload) ? encode_json($payload) : $payload;
-  $mqtt->publish($topic => $msg);
-  return 1;
-}
-
-# Publish full tariffs payload to MQTT (raw topic)
-sub publish_tariffs_to_mqtt {
-  my ($cfg, $payload, $source, $start_iso, $end_iso) = @_;
-  return 1 unless $cfg && $cfg->{mqtt_enabled};
-  return 1 unless $cfg->{mqtt_topic_raw};
-  return 1 unless $payload && ref($payload) eq 'HASH';
-
-  my $doc = {
-    source         => $source || 'unknown',
-    from           => $start_iso,
-    to             => $end_iso,
-    interval_count => $payload->{interval_count} // 0,
-    rows           => $payload->{rows} // [],
-  };
+  my $host = $cfg->{mqtt_host} // 'localhost';
+  my $port = int($cfg->{mqtt_port} // 1883);
+  my $user = $cfg->{mqtt_username} // '';
+  my $pass = $cfg->{mqtt_password} // '';
+  my $msg  = ref($payload) ? encode_json($payload) : $payload;
 
   my $ok = 1;
-  eval { publish_mqtt($cfg, $cfg->{mqtt_topic_raw}, $doc); 1 } or do {
-    $ok = 0;
-    my $err = $@ || 'unknown';
-    my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
-    if (open my $fh, '>>', $logfile) {
-      print $fh scalar(localtime) . " - MQTT raw publish failed: $err\n";
-      close $fh;
-    }
+  my $used_cli_fallback = 0;
+
+  my $try_net_mqtt_simple = sub {
+    eval {
+      require Net::MQTT::Simple;
+      Net::MQTT::Simple->import();
+      my $mqtt = Net::MQTT::Simple->new("$host:$port");
+
+      # Only call login if credentials provided
+      if (defined $user && $user ne '') {
+        $mqtt->login($user, $pass // '');
+      }
+
+      $mqtt->publish($topic => $msg);
+      1;
+    };
   };
+
+  my $net_ok = $try_net_mqtt_simple->();
+
+  if (!$net_ok) {
+    my $err = $@ || 'unknown';
+
+    # If credentials are set and Net::MQTT::Simple blocks insecure login,
+    # or any other failure happened with creds, fallback to mosquitto_pub.
+    if (defined $user && $user ne '') {
+      $used_cli_fallback = 1;
+
+      # Write payload to a temp file and use mosquitto_pub -f to avoid quoting issues
+      my $tmpfile = File::Spec->catfile($LBPDATADIR || '/tmp', "mqtt_payload_$$.json");
+      eval {
+        open my $tfh, '>', $tmpfile or die "Cannot write $tmpfile: $!";
+        print $tfh $msg;
+        close $tfh;
+        1;
+      } or do {
+        $ok = 0;
+        my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
+        if (open my $lf, '>>', $logfile) {
+          print $lf scalar(localtime) . " - MQTT publish fallback failed: cannot write temp file ($@)\n";
+          close $lf;
+        }
+        return $ok;
+      };
+
+      my @cmd = ('mosquitto_pub', '-h', $host, '-p', $port, '-t', $topic, '-f', $tmpfile);
+      push @cmd, ('-u', $user, '-P', $pass // '') if $user ne '';
+
+      my $rc = system(@cmd);
+      my $exit = ($rc == -1) ? -1 : ($rc >> 8);
+
+      unlink $tmpfile;
+
+      if ($exit != 0) {
+        $ok = 0;
+        my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
+        if (open my $lf, '>>', $logfile) {
+          print $lf scalar(localtime) . " - MQTT publish via mosquitto_pub failed (exit=$exit) cmd=[", join(' ', @cmd), "]\n";
+          close $lf;
+        }
+      }
+    } else {
+      # Anonymous publish failed; log and return
+      $ok = 0;
+      my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
+      if (open my $lf, '>>', $logfile) {
+        print $lf scalar(localtime) . " - MQTT publish failed via Net::MQTT::Simple: $err\n";
+        close $lf;
+      }
+    }
+  }
+
+  if ($used_cli_fallback) {
+    my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
+    if (open my $lf, '>>', $logfile) {
+      print $lf scalar(localtime) . " - MQTT publish used mosquitto_pub fallback\n";
+      close $lf;
+    }
+  }
+
   return $ok;
 }
 
