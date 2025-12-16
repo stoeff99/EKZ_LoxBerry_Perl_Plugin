@@ -6,6 +6,7 @@ use LoxBerry::System;            # SDK globals ($lbpdatadir, $lbpurl, $lbptempla
 use CGI;
 use JSON::PP;
 use FindBin;
+use URI::Escape qw(uri_escape);  # NEW: for URL-encoding
 require "$FindBin::Bin/common.pl";
 
 our ($lbpdatadir, $lbpurl, $lbptemplatedir);
@@ -15,7 +16,7 @@ print $q->redirect( -uri => _build_auth_url() );
 exit;
 
 sub _build_auth_url {
-  my $cfg = load_cfg();
+  my $cfg   = load_cfg();
   my $state = _randhex(16);
   my $nonce = _randhex(16);
 
@@ -31,15 +32,22 @@ sub _build_auth_url {
     ? $cfg->{redirect_uri}
     : "$lbpurl/callback.cgi";
 
+  # Ensure scope includes openid and offline_access as required
+  my $scope = $cfg->{scope} || 'openid offline_access';
+
   my %p = (
     client_id     => $cfg->{client_id},
     response_type => 'code',
     response_mode => $cfg->{response_mode} || 'query',
-    scope         => $cfg->{scope}         || 'openid',
+    scope         => $scope,
     redirect_uri  => $redirect_uri,
     state         => $state,
     nonce         => $nonce,
   );
-  my $qs = join '&', map { $_.'='.$p{$_} } keys %p;
+
+  # URL-encode all parameter values (robust against spaces/colons in redirect_uri/scope)
+  my @pairs = map { $_ . '=' . uri_escape($p{$_}) } sort keys %p;
+  my $qs = join '&', @pairs;
+
   return "$auth?$qs";
 }
