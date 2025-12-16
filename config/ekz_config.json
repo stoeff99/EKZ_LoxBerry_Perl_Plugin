@@ -9,8 +9,6 @@
   "scope": "openid offline_access",
   "response_mode": "query",
   "timezone": "Europe/Zurich",
-  "mqtt_enabled": true,
-  "mqtt_topic_summary": "ekz/ems/tariffs/now_plus_24h",
   "fallback_tariff_name": "electricity_standard",
   "retries": 3,
   "token_store_path": "/opt/loxberry/data/ekz/tokens.json",
@@ -21,7 +19,5 @@
   "mqtt_username": "",
   "mqtt_password": "",
   "mqtt_topic_raw": "ekz/ems/tariffs/raw",
-  "mqtt_topic_summary": "ekz/ems/tariffs/now_plus_24h",
-
-  "fallback_tariff_name": "electricity_standard"
+  "mqtt_topic_summary": "ekz/ems/tariffs/now_plus_24h"
 }
