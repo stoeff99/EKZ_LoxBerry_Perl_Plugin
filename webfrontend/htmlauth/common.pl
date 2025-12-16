@@ -274,13 +274,18 @@ sub fetch_customer_tariffs_window {
     int($cfg->{retries})
   );
 }
-
 sub build_scheduled_window {
-  # today 18:00 → +24h, local time
+  # today 18:00 local → +24h, include timezone offset like +01:00
   my $now = localtime;
   my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d').' 18:00:00', '%Y-%m-%d %H:%M:%S');
   my $end = $start + 24*60*60;
-  return ($start->strftime('%Y-%m-%dT%H:%M:%S'), $end->strftime('%Y-%m-%dT%H:%M:%S'));
+
+  my $off = $now->strftime('%z');            # e.g. +0100
+  $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/; # +0100 -> +01:00
+
+  my $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+  my $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+  return ($start_iso, $end_iso);
 }
 
 1;
