@@ -11,6 +11,9 @@ use FindBin;
 # Optional: show errors in browser while debugging
 # use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 
+# Load common.pl for shared config loading logic
+require File::Spec->catfile($FindBin::Bin, 'common.pl');
+
 # Declare SDK globals so 'strict' allows them
 our ($lbpurl, $lbpdatadir, $lbptemplatedir);
 
@@ -39,52 +42,20 @@ eval { make_path($LBPDATADIR) unless -d $LBPDATADIR; 1 } or do {
 # --- Config file path ---
 my $cfgfile = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
 
-# --- Defaults ---
-# NOTE: If you haven't renamed callback.pl -> callback.cgi yet, either rename it
-# or temporarily change the default below back to .../callback.pl.
-my %defaults = (
-  auth_server_base     => 'https://login.ekz.ch/auth',
-  realm                => 'myEKZ',
-  client_id            => 'ems-bowles',
-  client_secret        => '',
-  redirect_uri         => "https://ems.bowles.ch/admin/plugins/ekz_plugin/callback.cgi",
-  #redirect_uri         => "$LBPURL/callback.cgi",
-  api_base             => 'https://api.tariffs.ekz.ch/v1',
-  ems_instance_id      => 'ems-bowles',
-  scope                => 'openid offline_access',            # add 'offline_access' if allowed
-  response_mode        => 'query',
-  timezone             => 'Europe/Zurich',
-  mqtt_enabled         => JSON::PP::true,
-    mqtt_host            => 'localhost',
-    mqtt_port            => 1883,
-    mqtt_username        => '',
-    mqtt_password        => '',
-    mqtt_topic_raw       => 'ekz/ems/tariffs/raw',
-  mqtt_topic_summary   => 'ekz/ems/tariffs/now_plus_24h',
-  fallback_tariff_name => 'electricity_standard',
-  retries              => 3,
-  token_store_path     => ''
-);
+# --- Load config from JSON only (no hardcoded defaults) ---
+my $cfg = load_cfg_for_ui();
 
-# --- Load config (merge with defaults) ---
-my $cfg = { %defaults };
-if (-f $cfgfile) {
-    if (open my $fh, '<', $cfgfile) {
-        local $/ = undef;
-        my $raw = <$fh>;
-        close $fh;
-        my $loaded = eval { decode_json($raw) };
-        if ($@) {
-            print "<p style='color:#b00'>Invalid JSON in $cfgfile: $@</p>";
-        } elsif ($loaded && ref $loaded eq 'HASH') {
-            $cfg = { %defaults, %$loaded };
-            # Normalize any old .pl redirect to .cgi
-            $cfg->{redirect_uri} =~ s/callback\.pl/callback.cgi/;
-        }
-    } else {
-        print "<p style='color:#b00'>Cannot read $cfgfile: $!</p>";
-    }
+# Normalize any old .pl redirect to .cgi
+if ($cfg->{redirect_uri}) {
+    $cfg->{redirect_uri} =~ s/callback\.pl/callback.cgi/;
 }
+
+# Display-only fallback for redirect_uri if empty (for UI rendering only)
+my $display_redirect_uri = $cfg->{redirect_uri} || ($LBPURL ? "$LBPURL/callback.cgi" : '');
+
+# Ensure mqtt_enabled is a proper boolean
+$cfg->{mqtt_enabled} = JSON::PP::true unless exists $cfg->{mqtt_enabled};
+$cfg->{mqtt_enabled} = $cfg->{mqtt_enabled} ? JSON::PP::true : JSON::PP::false;
 
 # --- Handle POST ---
 my $msg = '';
@@ -98,11 +69,14 @@ if ($q->request_method eq 'POST') {
 
     for my $f (@fields) {
         my $v = $q->param($f);
-        $cfg->{$f} = defined $v ? $v : $cfg->{$f};
+        $cfg->{$f} = defined $v ? $v : ($cfg->{$f} // '');
     }
 
     # mqtt_enabled checkbox
     $cfg->{mqtt_enabled} = $q->param('mqtt_enabled') ? JSON::PP::true : JSON::PP::false;
+    
+    # Ensure retries is numeric (default to 3 if missing)
+    $cfg->{retries} = int($cfg->{retries} || 3) if exists $cfg->{retries};
 
         # client_secret: only update if non-empty provided
     if (defined $q->param('client_secret')) {
@@ -143,32 +117,32 @@ print $msg if $msg;
 print '<form method="post">';
 
 print '<fieldset><legend>EKZ / OIDC</legend>';
-print '<label>Auth server base<br><input name="auth_server_base" type="text" size="60" value="' . $cfg->{auth_server_base} . '"></label>';
-print '<label>Realm<br><input name="realm" type="text" value="' . $cfg->{realm} . '"></label>';
-print '<label>Client ID<br><input name="client_id" type="text" value="' . $cfg->{client_id} . '"></label>';
+print '<label>Auth server base<br><input name="auth_server_base" type="text" size="60" value="' . ($cfg->{auth_server_base} // '') . '"></label>';
+print '<label>Realm<br><input name="realm" type="text" value="' . ($cfg->{realm} // '') . '"></label>';
+print '<label>Client ID<br><input name="client_id" type="text" value="' . ($cfg->{client_id} // '') . '"></label>';
 print '<label>Client secret<br><input type="password" name="client_secret" placeholder="(enter to update)"></label>';
-print '<label>Redirect URI<br><input name="redirect_uri" type="text" size="80" value="' . $cfg->{redirect_uri} . '"></label>';
-print '<label>API base<br><input name="api_base" type="text" size="60" value="' . $cfg->{api_base} . '"></label>';
-print '<label>EMS instance ID<br><input name="ems_instance_id" type="text" value="' . $cfg->{ems_instance_id} . '"></label>';
-print '<label>Scope<br><input name="scope" type="text" value="' . $cfg->{scope} . '"> <small>Use <code>openid offline_access</code> if allowed.</small></label>';
-print '<label>Response mode<br><input name="response_mode" type="text" value="' . $cfg->{response_mode} . '"></label>';
-print '<label>Timezone<br><input name="timezone" type="text" value="' . $cfg->{timezone} . '"></label>';
+print '<label>Redirect URI<br><input name="redirect_uri" type="text" size="80" value="' . $display_redirect_uri . '"></label>';
+print '<label>API base<br><input name="api_base" type="text" size="60" value="' . ($cfg->{api_base} // '') . '"></label>';
+print '<label>EMS instance ID<br><input name="ems_instance_id" type="text" value="' . ($cfg->{ems_instance_id} // '') . '"></label>';
+print '<label>Scope<br><input name="scope" type="text" value="' . ($cfg->{scope} // '') . '"> <small>Use <code>openid offline_access</code> if allowed.</small></label>';
+print '<label>Response mode<br><input name="response_mode" type="text" value="' . ($cfg->{response_mode} // '') . '"></label>';
+print '<label>Timezone<br><input name="timezone" type="text" value="' . ($cfg->{timezone} // '') . '"></label>';
 print '</fieldset>';
 
 print '<fieldset><legend>MQTT</legend>';
 my $mqtt_checked = $cfg->{mqtt_enabled} ? ' checked' : '';
 print '<label><input type="checkbox" name="mqtt_enabled"' . $mqtt_checked . '> Enable MQTT</label>';
-print '<label>Broker host<br><input name="mqtt_host" type="text" value="' . $cfg->{mqtt_host} . '"></label>';
-print '<label>Broker port<br><input name="mqtt_port" type="text" value="' . $cfg->{mqtt_port} . '"></label>';
-print '<label>Username (optional)<br><input name="mqtt_username" type="text" value="' . $cfg->{mqtt_username} . '"></label>';
+print '<label>Broker host<br><input name="mqtt_host" type="text" value="' . ($cfg->{mqtt_host} // '') . '"></label>';
+print '<label>Broker port<br><input name="mqtt_port" type="text" value="' . ($cfg->{mqtt_port} // '') . '"></label>';
+print '<label>Username (optional)<br><input name="mqtt_username" type="text" value="' . ($cfg->{mqtt_username} // '') . '"></label>';
 print '<label>Password (optional)<br><input type="password" name="mqtt_password" placeholder="(enter to update)"></label>';
-print '<label>Raw topic<br><input name="mqtt_topic_raw" type="text" size="50" value="' . $cfg->{mqtt_topic_raw} . '"></label>';
-print '<label>Summary topic<br><input name="mqtt_topic_summary" type="text" size="50" value="' . $cfg->{mqtt_topic_summary} . '"></label>';
-print '<label>Fallback tariff name<br><input name="fallback_tariff_name" type="text" value="' . $cfg->{fallback_tariff_name} . '"></label>';
+print '<label>Raw topic<br><input name="mqtt_topic_raw" type="text" size="50" value="' . ($cfg->{mqtt_topic_raw} // '') . '"></label>';
+print '<label>Summary topic<br><input name="mqtt_topic_summary" type="text" size="50" value="' . ($cfg->{mqtt_topic_summary} // '') . '"></label>';
+print '<label>Fallback tariff name<br><input name="fallback_tariff_name" type="text" value="' . ($cfg->{fallback_tariff_name} // '') . '"></label>';
 print '</fieldset>';
 
 print '<fieldset><legend>Advanced</legend>';
-print '<label>Token store path (optional)<br><input name="token_store_path" type="text" size="80" value="' . $cfg->{token_store_path} . '"><br>';
+print '<label>Token store path (optional)<br><input name="token_store_path" type="text" size="80" value="' . ($cfg->{token_store_path} // '') . '"><br>';
 print '<small>Example: <code>/opt/loxberry/data/ekz/tokens.json</code></small></label>';
 print '</fieldset>';
 

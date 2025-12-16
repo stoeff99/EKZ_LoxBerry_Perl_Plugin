@@ -8,6 +8,10 @@ use CGI;
 use JSON::PP;
 use File::Spec;
 use File::Path qw(make_path);
+use FindBin;
+
+# Load common.pl for shared config loading logic
+require File::Spec->catfile($FindBin::Bin, 'common.pl');
 
 # --- CGI header ---
 my $q = CGI->new;
@@ -28,45 +32,20 @@ eval { make_path($LBPDATADIR) unless -d $LBPDATADIR; 1 } or do {
 # --- Config file path ---
 my $cfgfile = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
 
-# --- Defaults ---
-# NOTE: default redirect_uri uses your plugin's auth URL and points to callback.cgi
-my %defaults = (
-  auth_server_base     => 'https://login-test.ekz.ch/auth',
-  realm                => 'myEKZ',
-  client_id            => 'ems-bowles',
-  client_secret        => '',
-  redirect_uri         => "$LBPURL/callback.cgi",
-  api_base             => 'https://test-api.tariffs.ekz.ch/v1',
-  ems_instance_id      => 'ems-bowles',
-  scope                => 'openid',         # add 'offline_access' if allowed
-  response_mode        => 'query',
-  timezone             => 'Europe/Zurich',
-  mqtt_enabled         => JSON::PP::true,
-  mqtt_topic_summary   => 'ekz/ems/tariffs/now_plus_24h',
-  fallback_tariff_name => 'electricity_standard',
-  retries              => 3,
-  token_store_path     => ''
-);
+# --- Load config from JSON only (no hardcoded defaults) ---
+my $cfg = load_cfg_for_ui();
 
-# --- Load config (merge with defaults) ---
-my $cfg = { %defaults };
-if (-f $cfgfile) {
-    if (open my $fh, '<', $cfgfile) {
-        local $/ = undef;
-        my $raw = <$fh>;
-        close $fh;
-        my $loaded = eval { decode_json($raw) };
-        if ($@) {
-            print "<p style='color:#b00'>Invalid JSON in $cfgfile: $@</p>";
-        } elsif ($loaded && ref $loaded eq 'HASH') {
-            $cfg = { %defaults, %$loaded };
-            # Normalize any old .pl redirect to .cgi
-            $cfg->{redirect_uri} =~ s/callback\.pl/callback.cgi/;
-        }
-    } else {
-        print "<p style='color:#b00'>Cannot read $cfgfile: $!</p>";
-    }
+# Normalize any old .pl redirect to .cgi
+if ($cfg->{redirect_uri}) {
+    $cfg->{redirect_uri} =~ s/callback\.pl/callback.cgi/;
 }
+
+# Display-only fallback for redirect_uri if empty (for UI rendering only)
+my $display_redirect_uri = $cfg->{redirect_uri} || ($LBPURL ? "$LBPURL/callback.cgi" : '');
+
+# Ensure mqtt_enabled is a proper boolean
+$cfg->{mqtt_enabled} = JSON::PP::true unless exists $cfg->{mqtt_enabled};
+$cfg->{mqtt_enabled} = $cfg->{mqtt_enabled} ? JSON::PP::true : JSON::PP::false;
 
 # --- Handle POST ---
 my $msg = '';
@@ -79,11 +58,14 @@ if ($q->request_method eq 'POST') {
 
     for my $f (@fields) {
         my $v = $q->param($f);
-        $cfg->{$f} = defined $v ? $v : $cfg->{$f};
+        $cfg->{$f} = defined $v ? $v : ($cfg->{$f} // '');
     }
 
     # Checkbox
     $cfg->{mqtt_enabled} = $q->param('mqtt_enabled') ? JSON::PP::true : JSON::PP::false;
+    
+    # Ensure retries is numeric (default to 3 if missing)
+    $cfg->{retries} = int($cfg->{retries} || 3) if exists $cfg->{retries};
 
     # Only set client_secret if non-empty provided
     if (defined $q->param('client_secret')) {
@@ -131,11 +113,11 @@ print $msg if $msg;
 
 # Use sprintf to safely inject variables
 printf <<'HTML_FORM', 
-$cfg->{auth_server_base}, $cfg->{realm}, $cfg->{client_id},
-$cfg->{redirect_uri}, $cfg->{api_base}, $cfg->{ems_instance_id},
-$cfg->{scope}, $cfg->{response_mode}, $cfg->{timezone},
-$mqtt_checked, $cfg->{mqtt_topic_summary}, $cfg->{fallback_tariff_name},
-$cfg->{token_store_path}, $LBPURL;
+$cfg->{auth_server_base} // '', $cfg->{realm} // '', $cfg->{client_id} // '',
+$display_redirect_uri, $cfg->{api_base} // '', $cfg->{ems_instance_id} // '',
+$cfg->{scope} // '', $cfg->{response_mode} // '', $cfg->{timezone} // '',
+$mqtt_checked, $cfg->{mqtt_topic_summary} // '', $cfg->{fallback_tariff_name} // '',
+$cfg->{token_store_path} // '', $LBPURL;
 <form method="post">
 
   <fieldset><legend>EKZ / OIDC</legend>

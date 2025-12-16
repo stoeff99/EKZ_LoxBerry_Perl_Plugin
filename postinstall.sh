@@ -68,10 +68,23 @@ for dir in "$PHTMLAUTH" "$PHTML" "$PTEMPL"; do
   done
 done
 
-# -------- Data & Config file perms --------
-# Your settings file is PDATADIR/ekz_config.json (written by settings.cgi)
+# -------- Seed runtime config from shipped defaults --------
+# Copy the shipped default config to PDATADIR if it doesn't exist yet
 CFG="$PDATA/ekz_config.json"
-[ -f "$CFG" ] && chmod 0640 "$CFG" && chown loxberry:loxberry "$CFG"
+SHIPPED_CFG="$PDIR/config/ekz_config.json"
+
+if [ ! -f "$CFG" ] && [ -f "$SHIPPED_CFG" ]; then
+    echo "<INFO> Seeding runtime config from shipped defaults"
+    cp "$SHIPPED_CFG" "$CFG"
+    chmod 0640 "$CFG"
+    chown loxberry:loxberry "$CFG"
+    echo "<OK> Runtime config seeded: $CFG"
+elif [ -f "$CFG" ]; then
+    # Existing config: just ensure correct permissions
+    chmod 0640 "$CFG"
+    chown loxberry:loxberry "$CFG"
+    echo "<INFO> Runtime config exists, permissions updated"
+fi
 
 # -------- Create a log file (optional) --------
 touch "$PLOG/install.log"

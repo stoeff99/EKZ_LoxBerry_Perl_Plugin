@@ -27,45 +27,71 @@ if (!$BASEURL) {
 }
 
 sub load_cfg {
-  my $path = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
+  # Try to load runtime config from PDATADIR
+  my $runtime_path = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
   my $cfg = {};
-  if (-f $path) {
-    open my $fh, '<', $path or die "Config not found: $path";
+  
+  if (-f $runtime_path) {
+    # Load from runtime config
+    open my $fh, '<', $runtime_path or die "Config not found: $runtime_path";
     local $/ = undef;
     my $raw = <$fh>; close $fh;
     $cfg = decode_json($raw);
+  } else {
+    # Fallback: load from shipped default using FindBin
+    # FindBin::Bin is the directory of this script (webfrontend/htmlauth)
+    # So config/ekz_config.json is at ../../config/ekz_config.json
+    my $shipped_path = File::Spec->catfile($FindBin::Bin, '..', '..', 'config', 'ekz_config.json');
+    
+    if (-f $shipped_path) {
+      open my $fh, '<', $shipped_path or die "Shipped config not found: $shipped_path";
+      local $/ = undef;
+      my $raw = <$fh>; close $fh;
+      $cfg = decode_json($raw);
+    } else {
+      die "No config found: neither runtime ($runtime_path) nor shipped ($shipped_path) exists";
+    }
   }
 
-  my %defaults = (
-    auth_server_base     => 'https://login.ekz.ch/auth',
-    realm                => 'myEKZ',
-    client_id            => 'ems-bowles',
-    client_secret        => $cfg->{client_secret} // '',
-    redirect_uri         => ($cfg->{redirect_uri} // ($BASEURL ? "$BASEURL/callback.cgi" : '')),
-    api_base             => 'https://api.tariffs.ekz.ch/v1',
-    ems_instance_id      => 'ems-bowles',
-    scope                => 'openid',
-    response_mode        => 'query',
-    timezone             => 'Europe/Zurich',
-    retries              => 3,
-    mqtt_enabled         => JSON::PP::true,
-    mqtt_host            => 'localhost',
-    mqtt_port            => 1883,
-    mqtt_username        => '',
-    mqtt_password        => '',
-    mqtt_topic_raw       => 'ekz/ems/tariffs/raw',
-    mqtt_topic_summary   => 'ekz/ems/tariffs/now_plus_24h',
-    fallback_tariff_name => 'electricity_standard',
-    output_base          => 'ekz_customer_tariffs_now_plus_24h',
-    token_store_path     => ''
-  );
+  # Runtime fallback: if redirect_uri is missing or empty, compute from BASEURL
+  if (!$cfg->{redirect_uri} || $cfg->{redirect_uri} eq '') {
+    $cfg->{redirect_uri} = $BASEURL ? "$BASEURL/callback.cgi" : '';
+  }
 
-  $cfg = { %defaults, %$cfg };
-
-  # defaults
+  # Validate essential keys (loaded from JSON)
   for my $k (qw/auth_server_base client_id redirect_uri api_base ems_instance_id scope realm/) {
     die "Missing cfg key: $k" unless defined $cfg->{$k} && $cfg->{$k} ne '';
   }
+  
+  return $cfg;
+}
+
+sub load_cfg_for_ui {
+  # Load config for UI (settings.cgi) - similar to load_cfg but without validation
+  # and without runtime fallback for redirect_uri
+  my $runtime_path = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
+  my $cfg = {};
+  
+  if (-f $runtime_path) {
+    # Load from runtime config
+    open my $fh, '<', $runtime_path or return {};
+    local $/ = undef;
+    my $raw = <$fh>; close $fh;
+    $cfg = eval { decode_json($raw) } // {};
+  } else {
+    # Fallback: load from shipped default using FindBin
+    # FindBin::Bin is the directory of this script (webfrontend/htmlauth)
+    # So config/ekz_config.json is at ../../config/ekz_config.json
+    my $shipped_path = File::Spec->catfile($FindBin::Bin, '..', '..', 'config', 'ekz_config.json');
+    
+    if (-f $shipped_path) {
+      open my $fh, '<', $shipped_path or return {};
+      local $/ = undef;
+      my $raw = <$fh>; close $fh;
+      $cfg = eval { decode_json($raw) } // {};
+    }
+  }
+  
   return $cfg;
 }
 
