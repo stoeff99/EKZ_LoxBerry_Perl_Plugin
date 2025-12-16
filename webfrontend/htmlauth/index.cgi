@@ -24,7 +24,7 @@ print <<"HTML";
 <html>
 <head>
   <meta charset="utf-8">
-  <title>EKZ Dynamic Price (Perl)</title>
+  <title>EKZ Dynamic Price</title>
   <link rel="stylesheet" href="$BASEURL/style.css">
 </head>
 <body id="ekz-plugin" class="plugincontent">
