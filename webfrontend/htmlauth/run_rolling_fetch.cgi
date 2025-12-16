@@ -78,7 +78,7 @@ my $ok = eval {
       return 1;
     }
 
-    # SUCCESS PATH: persist and publish full payload
+    # SUCCESS: persist and publish full payload
     eval { save_tariffs_json($cfg, $payload, $source, $start_iso, $end_iso); 1 };
     eval { publish_tariffs_to_mqtt($cfg, $payload, $source, $start_iso, $end_iso); 1 };
 
