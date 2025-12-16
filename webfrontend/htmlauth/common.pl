@@ -11,7 +11,6 @@ use File::Spec;
 use File::Path qw(make_path);
 use FindBin;
 
-
 # SDK globals under strict
 our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
@@ -26,46 +25,44 @@ if (!$BASEURL) {
   $BASEURL = $path || '';
 }
 
+sub _read_json_file {
+  my ($path) = @_;
+  open my $fh, '<', $path or die "Cannot read $path: $!";
+  local $/ = undef;
+  my $raw = <$fh>;
+  close $fh;
+  my $data = decode_json($raw);
+  die "Invalid JSON in $path" unless ref $data eq 'HASH';
+  return $data;
+}
+
+sub _shipped_default_cfg_path {
+  # common.pl is in webfrontend/htmlauth; shipped defaults are at ../../config/ekz_config.json
+  return File::Spec->catfile($FindBin::Bin, '../../config/ekz_config.json');
+}
+
 sub load_cfg {
-  my $path = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
-  my $cfg = {};
-  if (-f $path) {
-    open my $fh, '<', $path or die "Config not found: $path";
-    local $/ = undef;
-    my $raw = <$fh>; close $fh;
-    $cfg = decode_json($raw);
+  my $runtime = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
+  my $cfg;
+
+  if (-f $runtime) {
+    $cfg = _read_json_file($runtime);
+  } else {
+    my $shipped = _shipped_default_cfg_path();
+    die "Default config not found: $shipped" unless -f $shipped;
+    $cfg = _read_json_file($shipped);
   }
 
-  my %defaults = (
-    auth_server_base     => 'https://login.ekz.ch/auth',
-    realm                => 'myEKZ',
-    client_id            => 'ems-bowles',
-    client_secret        => $cfg->{client_secret} // '',
-    redirect_uri         => ($cfg->{redirect_uri} // ($BASEURL ? "$BASEURL/callback.cgi" : '')),
-    api_base             => 'https://api.tariffs.ekz.ch/v1',
-    ems_instance_id      => 'ems-bowles',
-    scope                => 'openid',
-    response_mode        => 'query',
-    timezone             => 'Europe/Zurich',
-    retries              => 3,
-    mqtt_enabled         => JSON::PP::true,
-    mqtt_host            => 'localhost',
-    mqtt_port            => 1883,
-    mqtt_username        => '',
-    mqtt_password        => '',
-    mqtt_topic_raw       => 'ekz/ems/tariffs/raw',
-    mqtt_topic_summary   => 'ekz/ems/tariffs/now_plus_24h',
-    fallback_tariff_name => 'electricity_standard',
-    output_base          => 'ekz_customer_tariffs_now_plus_24h',
-    token_store_path     => ''
-  );
-
-  $cfg = { %defaults, %$cfg };
-
-  # defaults
-  for my $k (qw/auth_server_base client_id redirect_uri api_base ems_instance_id scope realm/) {
-    die "Missing cfg key: $k" unless defined $cfg->{$k} && $cfg->{$k} ne '';
+  # Minimal runtime fallback: compute redirect_uri if missing
+  if (!defined $cfg->{redirect_uri} || $cfg->{redirect_uri} eq '') {
+    $cfg->{redirect_uri} = ($BASEURL ? "$BASEURL/callback.cgi" : '');
   }
+
+  # Validate required keys exist in JSON
+  for my $k (qw/auth_server_base realm client_id api_base ems_instance_id scope response_mode timezone/) {
+    die "Missing cfg key: $k" unless defined $cfg->{$k};
+  }
+
   return $cfg;
 }
 
