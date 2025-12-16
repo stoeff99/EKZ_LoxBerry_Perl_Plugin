@@ -137,23 +137,18 @@ print '<a href="' . $BASEURL . '/index.cgi">Back</a></p>';
 print '</form></body></html>';
 
 
-# Add into webfrontend/htmlauth/settings.cgi (paste below other helper subs)
-use File::Basename;
-
+# --- Cron schedule helper: create/remove LoxBerry cron wrapper scripts ---
 sub update_cron_schedule {
     my ($schedule, $lbpurl) = @_;
-    # LoxBerry installation base (adjust only if your LB is installed elsewhere)
     my $LBHOME = '/opt/loxberry';
 
-    # Determine plugin id from $lbpurl if possible: "/admin/.../plugins/<plugindir>/..."
-    my $plugindir = 'ekz_plugin'; # fallback
+    # Derive plugin folder name from $lbpurl when possible
+    my $plugindir = 'ekz_plugin';
     if ($lbpurl && $lbpurl =~ m{/admin/[^/]+/plugins/([^/]+)}) {
         $plugindir = $1;
     }
 
-    # Host-local fetch script path used by the cron script
     my $fetch_script = "/admin/plugins/$plugindir/run_rolling_fetch.cgi";
-
     my $cron_file;
     my $cron_content;
 
@@ -190,7 +185,7 @@ sub update_cron_schedule {
         $cron_content .= "curl -s http://localhost$fetch_script >/dev/null 2>&1\n";
     }
     else {
-        # Remove any existing cron file and return success (treat unknown/0 as disabled)
+        # Treat unknown/0 as disabled — remove existing cron wrappers
         foreach my $dir ("$LBHOME/system/cron/cron.01min",
                          "$LBHOME/system/cron/cron.03min",
                          "$LBHOME/system/cron/cron.05min",
@@ -220,7 +215,6 @@ sub update_cron_schedule {
 
     # Write new cron file
     eval {
-        # Ensure directory exists
         my ($dir) = $cron_file =~ m{^(.+)/[^/]+$};
         if ($dir && !-d $dir) {
             mkdir $dir or die "Cannot create cron dir $dir: $!";
