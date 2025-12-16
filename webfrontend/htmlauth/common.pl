@@ -3,6 +3,7 @@ use strict;
 use warnings;
 
 use LoxBerry::System;
+use LoxBerry::Log;
 use JSON::PP;
 use LWP::UserAgent;
 use HTTP::Request::Common qw(POST);
@@ -25,6 +26,30 @@ if (!$BASEURL) {
   $path =~ s{/[^/]+$}{};
   $BASEURL = $path || '';
 }
+
+# --------------------------
+# Logging helper (uses LoxBerry::Log if available; falls back to data-dir file)
+# --------------------------
+sub _lb_log {
+  my ($level, $msg) = @_;
+  $level ||= 'INF';
+  $msg   ||= '';
+  my $ok = eval {
+    if ($level eq 'ERR') { LOGERR $msg }
+    elsif ($level eq 'DEB') { LOGDEB $msg }
+    else { LOGINF $msg }
+    1;
+  };
+  return if $ok;
+
+  # Fallback to data-dir fetch.log
+  my $logfile = File::Spec->catfile($LBPDATADIR || '/opt/loxberry/data', 'fetch.log');
+  if (open my $fh, '>>', $logfile) {
+    print $fh scalar(localtime) . " - $msg\n";
+    close $fh;
+  }
+}
+
 
 # --------------------------
 # Config loading
