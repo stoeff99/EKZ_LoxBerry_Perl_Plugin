@@ -221,6 +221,56 @@ sub fetch_window {
   };
 }
 
+# --- EKZ EMS linking helpers ---
+
+sub ems_link_status {
+  my ($cfg, $access, $redirect_uri) = @_;
+  my %hdr = ( Authorization => "Bearer $access", accept => "application/json" );
+  my $base = $cfg->{api_base};
+
+  my $params = {
+    ems_instance_id => $cfg->{ems_instance_id},
+    redirect_uri    => $redirect_uri,  # where EKZ should send the user back after linking
+  };
+
+  my $j = get_json_with_retry("$base/emsLinkStatus", \%hdr, $params, int($cfg->{retries}));
+  # Expected shape (per swagger):
+  # { "link_status": "linked" | "link_required", "linking_process_redirect_uri": "https://..." }
+  return $j;
+}
+
+sub ensure_linked {
+  my ($cfg) = @_;
+  my $access = ensure_access_token($cfg);
+
+  # Prefer configured redirect_uri; otherwise use plugin local handler
+  my $return_uri = ($cfg->{redirect_uri} && $cfg->{redirect_uri} ne '')
+    ? $cfg->{redirect_uri}
+    : ($BASEURL ? "$BASEURL/link_return.cgi" : '');
+
+  my $st = ems_link_status($cfg, $access, $return_uri);
+
+  if ($st && $st->{link_status} && $st->{link_status} eq 'link_required') {
+    my $redir = $st->{linking_process_redirect_uri} || '';
+    return ('link_required', $redir);
+  }
+  return ('linked', undef);
+}
+
+# Optional direct helper to fetch customer tariffs without fallback
+sub fetch_customer_tariffs_window {
+  my ($cfg, $start_iso, $end_iso) = @_;
+  my $access = ensure_access_token($cfg);
+  my %hdr = ( Authorization => "Bearer $access", accept => "application/json" );
+  my $base = $cfg->{api_base};
+
+  return get_json_with_retry(
+    "$base/customerTariffs", \%hdr,
+    { ems_instance_id => $cfg->{ems_instance_id}, start_timestamp => $start_iso, end_timestamp => $end_iso },
+    int($cfg->{retries})
+  );
+}
+
 sub build_scheduled_window {
   # today 18:00 → +24h, local time
   my $now = localtime;
