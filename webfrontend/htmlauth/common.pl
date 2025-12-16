@@ -158,36 +158,40 @@ sub ensure_access_token {
   return $tok->{access_token};
 }
 
-sub get_json_with_retry {
-  my ($url, $headers, $params, $attempts) = @_;
-  $attempts = ($attempts && $attempts > 0) ? $attempts : 3;
-  my $ua = LWP::UserAgent->new(timeout => 30);
+sub fetch_window {
+  my ($cfg, $access, $start_iso, $end_iso) = @_;
+  my %hdr = ( Authorization => "Bearer $access", accept => "application/json" );
+  my $base = $cfg->{api_base};
+  my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
 
-  # URL-encode query parameters
-  my $qs = '';
-  if ($params && ref $params eq 'HASH' && keys %$params) {
-    my @pairs = map {
-      my $k = $_;
-      my $v = defined $params->{$k} ? $params->{$k} : '';
-      uri_escape_utf8($k) . '=' . uri_escape_utf8($v)
-    } sort keys %$params;
-    $qs = join '&', @pairs;
-  }
-  my $full_url = $qs ne '' ? "$url?$qs" : $url;
-
-  for my $i (0..$attempts-1) {
-    my $req = HTTP::Request->new(GET => $full_url);
-    # Important: do not use 'each' on a shared hashref across retries
-    for my $k (keys %{$headers // {}}) {
-      $req->header($k => $headers->{$k});
+  eval {
+    my $params = {
+      ems_instance_id => $cfg->{ems_instance_id},
+      start_timestamp => $start_iso,
+      end_timestamp   => $end_iso,
+    };
+    my $payload = get_json_with_retry("$base/customerTariffs", \%hdr, $params, int($cfg->{retries}));
+    eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'customer', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
+    return ($payload, 'customer');
+  } or do {
+    my $err = $@ || 'unknown error';
+    if (open my $fh, '>>', $logfile) {
+      print $fh scalar(localtime) . " - customerTariffs failed: $err\n";
+      close $fh;
     }
-    my $res = $ua->request($req);
-    if ($res->is_success) {
-      return decode_json($res->decoded_content);
-    }
-    sleep($i == 0 ? 1 : (2**$i));
-  }
-  die "GET failed after $attempts attempts";
+    # Fallback to public tariffs WITH window
+    my $payload = get_json_with_retry(
+      "$base/tariffs", \%hdr,
+      {
+        tariff_name    => $cfg->{fallback_tariff_name},
+        start_timestamp => $start_iso,
+        end_timestamp   => $end_iso,
+      },
+      int($cfg->{retries})
+    );
+    eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
+    return ($payload, 'public');
+  };
 }
 
 sub fetch_window {
