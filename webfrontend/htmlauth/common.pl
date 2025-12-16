@@ -74,10 +74,16 @@ sub load_cfg_for_ui {
   
   if (-f $runtime_path) {
     # Load from runtime config
-    open my $fh, '<', $runtime_path or return {};
-    local $/ = undef;
-    my $raw = <$fh>; close $fh;
-    $cfg = eval { decode_json($raw) } // {};
+    if (open my $fh, '<', $runtime_path) {
+      local $/ = undef;
+      my $raw = <$fh>; close $fh;
+      $cfg = eval { decode_json($raw) };
+      warn "Failed to parse runtime config at $runtime_path: $@" if $@;
+      $cfg //= {};
+    } else {
+      warn "Failed to read runtime config at $runtime_path: $!";
+      $cfg = {};
+    }
   } else {
     # Fallback: load from shipped default using FindBin
     # FindBin::Bin is the directory of this script (webfrontend/htmlauth)
@@ -85,10 +91,18 @@ sub load_cfg_for_ui {
     my $shipped_path = File::Spec->catfile($FindBin::Bin, '..', '..', 'config', 'ekz_config.json');
     
     if (-f $shipped_path) {
-      open my $fh, '<', $shipped_path or return {};
-      local $/ = undef;
-      my $raw = <$fh>; close $fh;
-      $cfg = eval { decode_json($raw) } // {};
+      if (open my $fh, '<', $shipped_path) {
+        local $/ = undef;
+        my $raw = <$fh>; close $fh;
+        $cfg = eval { decode_json($raw) };
+        warn "Failed to parse shipped config at $shipped_path: $@" if $@;
+        $cfg //= {};
+      } else {
+        warn "Failed to read shipped config at $shipped_path: $!";
+        $cfg = {};
+      }
+    } else {
+      warn "No config found: neither runtime ($runtime_path) nor shipped ($shipped_path) exists";
     }
   }
   

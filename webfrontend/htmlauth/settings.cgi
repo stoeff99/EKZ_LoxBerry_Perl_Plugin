@@ -76,7 +76,7 @@ if ($q->request_method eq 'POST') {
     $cfg->{mqtt_enabled} = $q->param('mqtt_enabled') ? JSON::PP::true : JSON::PP::false;
     
     # Ensure retries is numeric (default to 3 if missing)
-    $cfg->{retries} = int($cfg->{retries} || 3) if exists $cfg->{retries};
+    $cfg->{retries} = int($cfg->{retries} || 3);
 
         # client_secret: only update if non-empty provided
     if (defined $q->param('client_secret')) {
