@@ -211,9 +211,14 @@ sub fetch_window {
       print $fh scalar(localtime) . " - customerTariffs failed: $err\n";
       close $fh;
     }
+    # Fallback to public tariffs WITH window
     my $payload = get_json_with_retry(
       "$base/tariffs", \%hdr,
-      { tariff_name => $cfg->{fallback_tariff_name} },
+      {
+        tariff_name    => $cfg->{fallback_tariff_name},
+        start_timestamp => $start_iso,
+        end_timestamp   => $end_iso,
+      },
       int($cfg->{retries})
     );
     eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
