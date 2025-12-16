@@ -176,3 +176,79 @@ print '<p class="actions"><button type="submit">Save</button> ';
 print '<a href="' . $BASEURL . '/index.cgi">Back</a></p>';
 
 print '</form></body></html>';
+
+
+##########################################################################
+# Update cron schedule based on fetch_schedule setting
+##########################################################################
+sub update_cron_schedule {
+    my ($schedule) = @_;
+    
+    # Determine cron file based on frequency
+    my $cron_file;
+    my $cron_content;
+    
+    my $fetch_script = "$lbphtmlauthdir/run_rolling_fetch.cgi";
+    
+    if ($schedule eq '1') {
+        # Once per day at 18:05
+        $cron_file = "$lbhomedir/system/cron/cron.daily/$lbpplugindir";
+        $cron_content = "#!/bin/bash\n# Run at 18:05 daily\n";
+        $cron_content .= "if [ \$(date +\\%H:\\%M) = \"18:05\" ]; then\n";
+        $cron_content .= "  curl -s http://localhost/admin/plugins/$lbpplugindir/run_rolling_fetch.cgi >/dev/null 2>&1\n";
+        $cron_content .= "fi\n";
+    }
+    elsif ($schedule eq '2') {
+        # Twice per day at 18:05 and 06:05
+        $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
+        $cron_content = "#!/bin/bash\n# Run at 18:05 and 06:05\n";
+        $cron_content .= "HOUR=\$(date +\\%H)\nMINUTE=\$(date +\\%M)\n";
+        $cron_content .= "if [[ \$MINUTE == \"05\" && (\$HOUR == \"18\" || \$HOUR == \"06\") ]]; then\n";
+        $cron_content .= "  curl -s http://localhost/admin/plugins/$lbpplugindir/run_rolling_fetch.cgi >/dev/null 2>&1\n";
+        $cron_content .= "fi\n";
+    }
+    elsif ($schedule eq '12') {
+        # Every 2 hours (12x per day)
+        $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
+        $cron_content = "#!/bin/bash\n# Run every 2 hours\n";
+        $cron_content .= "HOUR=\$(date +\\%H)\n";
+        $cron_content .= "if (( \$HOUR % 2 == 0 )); then\n";
+        $cron_content .= "  curl -s http://localhost/admin/plugins/$lbpplugindir/run_rolling_fetch.cgi >/dev/null 2>&1\n";
+        $cron_content .= "fi\n";
+    }
+    elsif ($schedule eq '24') {
+        # Every hour (24x per day)
+        $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
+        $cron_content = "#!/bin/bash\n# Run every hour\n";
+        $cron_content .= "curl -s http://localhost/admin/plugins/$lbpplugindir/run_rolling_fetch.cgi >/dev/null 2>&1\n";
+    }
+    else {
+        return 0;  # Invalid schedule
+    }
+    
+    # Remove old cron files from other locations
+    my @cron_dirs = ("$lbhomedir/system/cron/cron.01min",
+                     "$lbhomedir/system/cron/cron.03min",
+                     "$lbhomedir/system/cron/cron.05min",
+                     "$lbhomedir/system/cron/cron.10min",
+                     "$lbhomedir/system/cron/cron.15min",
+                     "$lbhomedir/system/cron/cron.30min",
+                     "$lbhomedir/system/cron/cron.hourly",
+                     "$lbhomedir/system/cron/cron.daily");
+    
+    foreach my $dir (@cron_dirs) {
+        my $old_file = "$dir/$lbpplugindir";
+        unlink $old_file if -e $old_file;
+    }
+    
+    # Write new cron file
+    eval {
+        open my $fh, '>', $cron_file or die "Cannot write $cron_file: $!";
+        print $fh $cron_content;
+        close $fh;
+        chmod 0755, $cron_file;
+    };
+    
+    return $@ ? 0 : 1;
+}
+
