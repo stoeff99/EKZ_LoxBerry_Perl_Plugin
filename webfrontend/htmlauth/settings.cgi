@@ -43,13 +43,13 @@ my $cfgfile = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
 # NOTE: If you haven't renamed callback.pl -> callback.cgi yet, either rename it
 # or temporarily change the default below back to .../callback.pl.
 my %defaults = (
-  auth_server_base     => 'https://login-test.ekz.ch/auth',
+  auth_server_base     => 'https://login.ekz.ch/auth',
   realm                => 'myEKZ',
   client_id            => 'ems-bowles',
   client_secret        => '',
   redirect_uri         => "https://ems.bowles.ch/admin/plugins/ekz_plugin/callback.cgi",
   #redirect_uri         => "$LBPURL/callback.cgi",
-  api_base             => 'https://test-api.tariffs.ekz.ch/v1',
+  api_base             => 'https://api.tariffs.ekz.ch/v1',
   ems_instance_id      => 'ems-bowles',
   scope                => 'openid offline_access',            # add 'offline_access' if allowed
   response_mode        => 'query',
