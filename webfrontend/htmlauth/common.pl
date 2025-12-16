@@ -92,6 +92,34 @@ sub publish_mqtt {
   return 1;
 }
 
+# Publish full tariffs payload to MQTT (raw topic)
+sub publish_tariffs_to_mqtt {
+  my ($cfg, $payload, $source, $start_iso, $end_iso) = @_;
+  return 1 unless $cfg && $cfg->{mqtt_enabled};
+  return 1 unless $cfg->{mqtt_topic_raw};
+  return 1 unless $payload && ref($payload) eq 'HASH';
+
+  my $doc = {
+    source         => $source || 'unknown',
+    from           => $start_iso,
+    to             => $end_iso,
+    interval_count => $payload->{interval_count} // 0,
+    rows           => $payload->{rows} // [],
+  };
+
+  my $ok = 1;
+  eval { publish_mqtt($cfg, $cfg->{mqtt_topic_raw}, $doc); 1 } or do {
+    $ok = 0;
+    my $err = $@ || 'unknown';
+    my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
+    if (open my $fh, '>>', $logfile) {
+      print $fh scalar(localtime) . " - MQTT raw publish failed: $err\n";
+      close $fh;
+    }
+  };
+  return $ok;
+}
+
 # --------------------------
 # Misc helpers
 # --------------------------
