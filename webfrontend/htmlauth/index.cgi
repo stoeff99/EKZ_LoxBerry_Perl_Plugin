@@ -22,8 +22,12 @@ print $q->header('text/html; charset=utf-8');
 print <<"HTML";
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>EKZ Dynamic Price (Perl)</title></head>
-<body>
+<head>
+  <meta charset="utf-8">
+  <title>EKZ Dynamic Price (Perl)</title>
+  <link rel="stylesheet" href="$BASEURL/style.css">
+</head>
+<body id="ekz-plugin" class="plugincontent">
   <h2>EKZ Dynamic Price (Perl)</h2>
   <nav>
     <a href="$BASEURL/start.cgi">Sign in (OIDC)</a> |
