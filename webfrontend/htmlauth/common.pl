@@ -212,7 +212,8 @@ sub get_json_with_retry {
 }
 
 # --------------------------
-# --- replace existing fetch_window with the following (includes helper) ---
+# Fetch Data Window
+# --------------------------
 sub _normalize_payload {
   my ($p) = @_;
   return {} unless defined $p && ref($p) eq 'HASH';
@@ -345,6 +346,58 @@ sub fetch_window {
   $pub_payload = {} unless defined $pub_payload && ref($pub_payload) eq 'HASH';
   $pub_payload = _normalize_payload($pub_payload);
   return ($pub_payload, 'public');
+}
+
+
+# --------------------------
+# Saves tariffs to JSON
+# --------------------------
+
+sub save_tariffs_json {
+  my ($cfg, $payload, $source, $start_iso, $end_iso) = @_;
+  return 1 unless $cfg && $payload && ref($payload) eq 'HASH';
+
+  my $dir = $LBPDATADIR || '/opt/loxberry/data';
+  eval { File::Path::make_path($dir) unless -d $dir; 1 } or return 0;
+
+  # Filenames: latest.json and a windowed file
+  (my $start_safe = $start_iso) =~ s/[:+]/_/g;
+  (my $end_safe   = $end_iso)   =~ s/[:+]/_/g;
+  my $window_file = File::Spec->catfile($dir, "tariffs_${source}_${start_safe}_${end_safe}.json");
+  my $latest_file = File::Spec->catfile($dir, "tariffs_latest.json");
+
+  my $doc = {
+    source         => $source,
+    from           => $start_iso,
+    to             => $end_iso,
+    interval_count => $payload->{interval_count} // 0,
+    rows           => $payload->{rows} // [],
+  };
+
+  eval {
+    # Write windowed file
+    open my $fh, '>', $window_file or die "Cannot write $window_file: $!";
+    print $fh encode_json($doc);
+    close $fh;
+    chmod 0640, $window_file;
+
+    # Write latest.json
+    open my $fl, '>', $latest_file or die "Cannot write $latest_file: $!";
+    print $fl encode_json($doc);
+    close $fl;
+    chmod 0640, $latest_file;
+    1;
+  } or do {
+    # best-effort logging
+    my $logfile = File::Spec->catfile($dir, 'fetch.log');
+    if (open my $lf, '>>', $logfile) {
+      print $lf scalar(localtime) . " - save_tariffs_json failed: $@\n";
+      close $lf;
+    }
+    return 0;
+  };
+
+  return 1;
 }
 
 # --------------------------
