@@ -212,56 +212,112 @@ sub get_json_with_retry {
 }
 
 # --------------------------
-# fetch_window: try customerTariffs, fallback to public tariffs
+# fetch_window: try customerTariffs, fallback to public tariffs (robust, multi-step)
 # --------------------------
 sub fetch_window {
   my ($cfg, $access, $start_iso, $end_iso) = @_;
 
   my %hdr = ( Authorization => "Bearer $access", accept => "application/json" );
-  my $base   = $cfg->{api_base};
+  my $base    = $cfg->{api_base};
   my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
 
-  my ($payload, $source);
+  my $attempts = int($cfg->{retries} || 3);
 
-  # Try customerTariffs first
-  eval {
-    my $params = {
-      ems_instance_id => $cfg->{ems_instance_id},
-      start_timestamp => $start_iso,
-      end_timestamp   => $end_iso,
-    };
-    $payload = get_json_with_retry("$base/customerTariffs", \%hdr, $params, int($cfg->{retries}));
-    # Publish summary (best-effort)
-    eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'customer', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
-    $source = 'customer';
-    1;
-  } or do {
-    # customerTariffs failed: log error and try public tariffs
-    my $err = $@ || 'unknown error';
+  # Helper to log a message to fetch.log (best-effort)
+  my $log = sub {
+    my ($m) = @_;
     eval {
       if (open my $fh, '>>', $logfile) {
-        print $fh scalar(localtime) . " - customerTariffs failed: $err\n";
+        print $fh scalar(localtime) . " - $m\n";
         close $fh;
       }
       1;
     };
+  };
 
-    # Fallback to public tariffs with the same time window
-    my $params_pub = {
-      tariff_name     => $cfg->{fallback_tariff_name},
+  my ($payload, $source);
+
+  # 1) Try customerTariffs
+  my $cust_params = {
+    ems_instance_id => $cfg->{ems_instance_id},
+    start_timestamp => $start_iso,
+    end_timestamp   => $end_iso,
+  };
+
+  eval {
+    $payload = get_json_with_retry("$base/customerTariffs", \%hdr, $cust_params, $attempts);
+    $source  = 'customer';
+    1;
+  } or do {
+    my $err = $@ || 'unknown error';
+    $log->("customerTariffs failed: $err");
+    $payload = undef;
+    $source  = undef;
+  };
+
+  # If customer payload has rows, return it
+  if (defined $payload && ref($payload) eq 'HASH' && $payload->{rows} && ref($payload->{rows}) eq 'ARRAY' && @{ $payload->{rows} }) {
+    $log->("customerTariffs: returned " . scalar(@{$payload->{rows}}) . " rows");
+    eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'customer', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
+    return ($payload, 'customer');
+  }
+
+  # Log empty or missing customer payload
+  if (defined $payload && ref($payload) eq 'HASH') {
+    $log->("customerTariffs returned empty rows (count=0), falling back to public tariffs");
+  }
+
+  # 2) Try public /tariffs with fallback_tariff_name (if set)
+  my $pub_payload;
+  my $tariff_name = $cfg->{fallback_tariff_name} // '';
+
+  if ($tariff_name ne '') {
+    my $pub_params = {
+      tariff_name     => $tariff_name,
       start_timestamp => $start_iso,
       end_timestamp   => $end_iso,
     };
-    $payload = get_json_with_retry("$base/tariffs", \%hdr, $params_pub, int($cfg->{retries}));
-    eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
-    $source = 'public';
+    eval {
+      $pub_payload = get_json_with_retry("$base/tariffs", \%hdr, $pub_params, $attempts);
+      1;
+    } or do {
+      my $err = $@ || 'unknown error';
+      $log->("public /tariffs (tariff_name=$tariff_name) failed: $err");
+      $pub_payload = undef;
+    };
+
+    if (defined $pub_payload && ref($pub_payload) eq 'HASH' && $pub_payload->{rows} && ref($pub_payload->{rows}) eq 'ARRAY' && @{ $pub_payload->{rows} }) {
+      $log->("public /tariffs (tariff_name=$tariff_name): returned " . scalar(@{$pub_payload->{rows}}) . " rows");
+      eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
+      return ($pub_payload, 'public');
+    }
+    if (defined $pub_payload && ref($pub_payload) eq 'HASH') {
+      $log->("public /tariffs (tariff_name=$tariff_name) returned empty rows (count=0)");
+    }
+  } else {
+    $log->("No fallback_tariff_name configured; skipping tariff_name-based public request");
+  }
+
+  # 3) Try public /tariffs without tariff_name (defaults)
+  eval {
+    $pub_payload = get_json_with_retry("$base/tariffs", \%hdr, { start_timestamp => $start_iso, end_timestamp => $end_iso }, $attempts);
+    1;
+  } or do {
+    my $err = $@ || 'unknown error';
+    $log->("public /tariffs (no tariff_name) failed: $err");
+    $pub_payload = undef;
   };
 
-  # Ensure we always return a hashref (or an empty hashref) and the source label
-  $payload = {} unless defined $payload && ref($payload) eq 'HASH';
-  $source  = 'unknown' unless defined $source && !ref($source);
+  if (defined $pub_payload && ref($pub_payload) eq 'HASH' && $pub_payload->{rows} && ref($pub_payload->{rows}) eq 'ARRAY' && @{ $pub_payload->{rows} }) {
+    $log->("public /tariffs (no tariff_name): returned " . scalar(@{$pub_payload->{rows}}) . " rows");
+    eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
+    return ($pub_payload, 'public');
+  }
 
-  return ($payload, $source);
+  # Nothing returned rows; log and return empty payload with 'public' source
+  $log->("No tariff rows found from customerTariffs or public /tariffs endpoints; returning empty payload.");
+  $pub_payload = {} unless defined $pub_payload && ref($pub_payload) eq 'HASH';
+  return ($pub_payload, 'public');
 }
 
 # --------------------------
