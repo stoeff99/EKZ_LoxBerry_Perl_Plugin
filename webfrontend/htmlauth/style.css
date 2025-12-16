@@ -1,0 +1,33 @@
+/* EKZ LoxBerry plugin styles
+   Purpose: reduce overall font-size for this plugin UI and set a clear font-family.
+   Loaded from webfrontend/htmlauth/index.cgi via <link href="$BASEURL/style.css">.
+*/
+
+/* Scope styles to the plugin page body */
+#ekz-plugin, body.plugincontent {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+  font-size: 13px !important; /* reduce default font size used by system UI for readability */
+  line-height: 1.4 !important;
+  color: #222;
+}
+
+/* Make headings slightly larger but consistent */
+#ekz-plugin h1, #ekz-plugin h2, body.plugincontent h1, body.plugincontent h2 {
+  font-weight: 600;
+  margin: 0 0 0.5em 0;
+}
+
+/* Navigation tweaks so the link row doesn't appear oversized */
+#ekz-plugin nav, body.plugincontent nav {
+  margin: 0.5em 0 1em 0;
+  font-size: 13px !important;
+}
+
+/* Small utility: ensure anchors look normal */
+#ekz-plugin a, body.plugincontent a {
+  color: #0366d6;
+  text-decoration: none;
+}
+#ekz-plugin a:hover, body.plugincontent a:hover {
+  text-decoration: underline;
+}
