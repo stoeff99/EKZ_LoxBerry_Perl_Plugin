@@ -11,6 +11,9 @@ use LoxBerry::System;
 
 our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
+# safe HTML escape helper
+sub h { return '' unless defined $_[0]; return CGI::escapeHTML($_[0]); }
+
 # Base URL
 my $BASEURL = $lbpurl;
 if (!$BASEURL) {
@@ -20,7 +23,7 @@ if (!$BASEURL) {
 }
 
 # Load shared config loader
-require File::Spec->catfile($FindBin::Bin, 'common.pl');
+require "$FindBin::Bin/common.pl";
 
 my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
@@ -40,7 +43,7 @@ my $cfgfile = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
 # Load current cfg (runtime or shipped default via common.pl::load_cfg)
 my $cfg = eval { load_cfg() };
 if ($@) {
-  print "<p style='color:#b00'>Cannot load configuration: $@</p>";
+  print "<p style='color:#b00'>Cannot load configuration: " . h($@) . "</p>";
   $cfg = {};
 }
 
@@ -52,13 +55,14 @@ if ($q->request_method eq 'POST') {
       auth_server_base realm client_id redirect_uri api_base ems_instance_id
       scope response_mode timezone
       mqtt_enabled mqtt_host mqtt_port mqtt_username mqtt_topic_raw mqtt_topic_summary
-      fallback_tariff_name retries token_store_path
+      fallback_tariff_name retries token_store_path fetch_schedule
     /;
 
     # Update booleans and strings
     for my $f (@fields) {
         my $v = $q->param($f);
         if ($f eq 'mqtt_enabled') {
+            # checkbox: present when checked
             $cfg->{$f} = $q->param('mqtt_enabled') ? JSON::PP::true : JSON::PP::false;
         } else {
             $cfg->{$f} = defined $v ? $v : $cfg->{$f};
@@ -84,17 +88,24 @@ if ($q->request_method eq 'POST') {
         print $fh encode_json($cfg);
         close $fh;
         chmod 0640, $cfgfile;
-        $msg = "<div style='color:#080'>Settings saved.</div>";
+
+        # Update cron schedule (best-effort)
+        my $cron_ok = update_cron_schedule($cfg->{fetch_schedule}, $LBPURL);
+        if ($cron_ok) {
+            $msg = "<div style='color:#080'>Settings saved. Fetch schedule updated.</div>";
+        } else {
+            $msg = "<div style='color:#b00'>Settings saved, but failed to update cron schedule. Check logs.</div>";
+        }
     } else {
-        $msg = "<div style='color:#b00'>Error: cannot write $cfgfile: $!</div>";
+        $msg = "<div style='color:#b00'>Error: cannot write $cfgfile: " . h($!) . "</div>";
     }
 }
 
-# --- Render HTML (no heredocs) ---
+# --- Render HTML ---
 print '<!doctype html><html><head><meta charset="utf-8"><title>EKZ Settings</title>';
 print '<style>body{font-family:system-ui,Arial,sans-serif;max-width:780px;margin:1.2rem auto}';
 print 'fieldset{margin-bottom:1rem}label{display:block;margin:.4rem 0}';
-print 'input[type=text],input[type=password]{width:100%;max-width:780px}';
+print 'input[type=text],input[type=password],select{width:100%;max-width:780px}';
 print 'button{padding:.4rem .9rem}.actions{margin-top:1rem}</style></head><body>';
 print '<h2>EKZ Settings</h2>';
 print $msg if $msg;
@@ -102,40 +113,51 @@ print $msg if $msg;
 print '<form method="post">';
 
 print '<fieldset><legend>EKZ / OIDC</legend>';
-print '<label>Auth server base<br><input name="auth_server_base" type="text" size="60" value="' . $cfg->{auth_server_base} . '"></label>';
-print '<label>Realm<br><input name="realm" type="text" value="' . $cfg->{realm} . '"></label>';
-print '<label>Client ID<br><input name="client_id" type="text" value="' . $cfg->{client_id} . '"></label>';
+print '<label>Auth server base<br><input name="auth_server_base" type="text" size="60" value="' . h($cfg->{auth_server_base}) . '"></label>';
+print '<label>Realm<br><input name="realm" type="text" value="' . h($cfg->{realm}) . '"></label>';
+print '<label>Client ID<br><input name="client_id" type="text" value="' . h($cfg->{client_id}) . '"></label>';
 print '<label>Client secret<br><input type="password" name="client_secret" placeholder="(enter to update)"></label>';
-print '<label>Redirect URI<br><input name="redirect_uri" type="text" size="80" value="' . $cfg->{redirect_uri} . '"></label>';
-print '<label>API base<br><input name="api_base" type="text" size="60" value="' . $cfg->{api_base} . '"></label>';
-print '<label>EMS instance ID<br><input name="ems_instance_id" type="text" value="' . $cfg->{ems_instance_id} . '"></label>';
-print '<label>Scope<br><input name="scope" type="text" value="' . $cfg->{scope} . '"> <small>Use <code>openid offline_access</code> if allowed.</small></label>';
-print '<label>Response mode<br><input name="response_mode" type="text" value="' . $cfg->{response_mode} . '"></label>';
-print '<label>Timezone<br><input name="timezone" type="text" value="' . $cfg->{timezone} . '"></label>';
+print '<label>Redirect URI<br><input name="redirect_uri" type="text" size="80" value="' . h($cfg->{redirect_uri}) . '"></label>';
+print '<label>API base<br><input name="api_base" type="text" size="60" value="' . h($cfg->{api_base}) . '"></label>';
+print '<label>EMS instance ID<br><input name="ems_instance_id" type="text" value="' . h($cfg->{ems_instance_id}) . '"></label>';
+print '<label>Scope<br><input name="scope" type="text" value="' . h($cfg->{scope}) . '"> <small>Use <code>openid offline_access</code> if allowed.</small></label>';
+print '<label>Response mode<br><input name="response_mode" type="text" value="' . h($cfg->{response_mode}) . '"></label>';
+print '<label>Timezone<br><input name="timezone" type="text" value="' . h($cfg->{timezone}) . '"></label>';
 print '</fieldset>';
 
 print '<fieldset><legend>MQTT</legend>';
-my $mqtt_checked = $cfg->{mqtt_enabled} ? ' checked' : '';
+my $mqtt_checked = ($cfg->{mqtt_enabled} ? ' checked' : '');
 print '<label><input type="checkbox" name="mqtt_enabled"' . $mqtt_checked . '> Enable MQTT</label>';
-print '<label>Broker host<br><input name="mqtt_host" type="text" value="' . $cfg->{mqtt_host} . '"></label>';
-print '<label>Broker port<br><input name="mqtt_port" type="text" value="' . $cfg->{mqtt_port} . '"></label>';
-print '<label>Username (optional)<br><input name="mqtt_username" type="text" value="' . $cfg->{mqtt_username} . '"></label>';
+print '<label>Broker host<br><input name="mqtt_host" type="text" value="' . h($cfg->{mqtt_host}) . '"></label>';
+print '<label>Broker port<br><input name="mqtt_port" type="text" value="' . h($cfg->{mqtt_port}) . '"></label>';
+print '<label>Username (optional)<br><input name="mqtt_username" type="text" value="' . h($cfg->{mqtt_username}) . '"></label>';
 print '<label>Password (optional)<br><input type="password" name="mqtt_password" placeholder="(enter to update)"></label>';
-print '<label>Raw topic<br><input name="mqtt_topic_raw" type="text" size="50" value="' . $cfg->{mqtt_topic_raw} . '"></label>';
-print '<label>Summary topic<br><input name="mqtt_topic_summary" type="text" size="50" value="' . $cfg->{mqtt_topic_summary} . '"></label>';
-print '<label>Fallback tariff name<br><input name="fallback_tariff_name" type="text" value="' . $cfg->{fallback_tariff_name} . '"></label>';
+print '<label>Raw topic<br><input name="mqtt_topic_raw" type="text" size="50" value="' . h($cfg->{mqtt_topic_raw}) . '"></label>';
+print '<label>Summary topic<br><input name="mqtt_topic_summary" type="text" size="50" value="' . h($cfg->{mqtt_topic_summary}) . '"></label>';
+print '<label>Fallback tariff name<br><input name="fallback_tariff_name" type="text" value="' . h($cfg->{fallback_tariff_name}) . '"></label>';
 print '</fieldset>';
 
 print '<fieldset><legend>Advanced</legend>';
-print '<label>Token store path (optional)<br><input name="token_store_path" type="text" size="80" value="' . $cfg->{token_store_path} . '"><br>';
+print '<label>Token store path (optional)<br><input name="token_store_path" type="text" size="80" value="' . h($cfg->{token_store_path}) . '"><br>';
 print '<small>Example: <code>/opt/loxberry/data/ekz/tokens.json</code></small></label>';
+
+# Fetch schedule select
+my $sel_fetch = defined $cfg->{fetch_schedule} ? $cfg->{fetch_schedule} : '0';
+print '<label>Fetch schedule<br>';
+print '<select name="fetch_schedule">';
+print '<option value="0"' . ($sel_fetch eq '0' ? ' selected' : '') . '>Disabled</option>';
+print '<option value="1"' . ($sel_fetch eq '1' ? ' selected' : '') . '>Once per day (18:05)</option>';
+print '<option value="2"' . ($sel_fetch eq '2' ? ' selected' : '') . '>Twice per day (06:05 & 18:05)</option>';
+print '<option value="12"' . ($sel_fetch eq '12' ? ' selected' : '') . '>Every 2 hours</option>';
+print '<option value="24"' . ($sel_fetch eq '24' ? ' selected' : '') . '>Every hour</option>';
+print '</select></label>';
+
 print '</fieldset>';
 
 print '<p class="actions"><button type="submit">Save</button> ';
-print '<a href="' . $BASEURL . '/index.cgi">Back</a></p>';
+print '<a href="' . h($BASEURL) . '/index.cgi">Back</a></p>';
 
 print '</form></body></html>';
-
 
 # --- Cron schedule helper: create/remove LoxBerry cron wrapper scripts ---
 sub update_cron_schedule {
@@ -240,5 +262,3 @@ sub update_cron_schedule {
 
     return 1;
 }
-}
-
