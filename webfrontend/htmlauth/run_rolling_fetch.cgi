@@ -73,6 +73,11 @@ my $ok = eval {
         }
         1;
       };
+    
+    # Persist to data dir (best-effort)
+    eval { save_tariffs_json($cfg, $payload, $source, $start_iso, $end_iso); 1 };
+
+
       print encode_json({ error => 'invalid_fetch_response', message => $msg });
       return 1;
     }
