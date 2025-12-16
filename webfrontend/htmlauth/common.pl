@@ -10,7 +10,7 @@ use Time::Piece;
 use File::Spec;
 use File::Path qw(make_path);
 use FindBin;
-use URI::Escape qw(uri_escape_utf8);  # NEW: for URL-encoding query strings
+use URI::Escape qw(uri_escape_utf8);
 
 # SDK globals under strict
 our ($lbpdatadir, $lbpurl, $lbptemplatedir);
@@ -26,6 +26,9 @@ if (!$BASEURL) {
   $BASEURL = $path || '';
 }
 
+# --------------------------
+# Config loading
+# --------------------------
 sub _read_json_file {
   my ($path) = @_;
   open my $fh, '<', $path or die "Cannot read $path: $!";
@@ -67,41 +70,17 @@ sub load_cfg {
   return $cfg;
 }
 
-sub has_tokens {
-  my ($cfg) = @_;
-  my $tok = load_tokens($cfg) || {};
-  return 1 if ($tok->{refresh_token});
-  # optionally consider a still-valid access token
-  return 1 if ($tok->{access_token} && $tok->{expires_at} && time() < ($tok->{expires_at} - 30));
-  return 0;
-}
-
-# Wrapper that never dies; returns (status, link_url, err)
-# status: 'linked' | 'link_required' | 'not_signed_in' | 'error'
-sub try_ensure_linked {
-  my ($cfg) = @_;
-  return ('not_signed_in', undef, undef) unless has_tokens($cfg);
-
-  my ($status, $link_url);
-  my $err;
-  eval {
-    ($status, $link_url) = ensure_linked($cfg);
-    1;
-  } or do {
-    $err = $@ || 'unknown error';
-    $status = 'error';
-  };
-  return ($status, $link_url, $err);
-}
-
+# --------------------------
+# MQTT publish helper
+# --------------------------
 sub publish_mqtt {
   my ($cfg, $topic, $payload) = @_;
 
-  return 1 unless $cfg->{mqtt_enabled};
+  return 1 unless $cfg && $cfg->{mqtt_enabled};
   return 1 unless $topic;
 
   eval { require Net::MQTT::Simple; Net::MQTT::Simple->import(); 1 } or die "Net::MQTT::Simple not available";
-  my $server = $cfg->{mqtt_host} . ':' . int($cfg->{mqtt_port} || 1883);
+  my $server = ($cfg->{mqtt_host} // 'localhost') . ':' . int($cfg->{mqtt_port} || 1883);
   my $mqtt   = Net::MQTT::Simple->new($server);
 
   if ($cfg->{mqtt_username}) {
@@ -113,6 +92,9 @@ sub publish_mqtt {
   return 1;
 }
 
+# --------------------------
+# Misc helpers
+# --------------------------
 sub _randhex {
   my ($len) = @_;
   my @hex = ('0'..'9', 'a'..'f');
@@ -121,9 +103,12 @@ sub _randhex {
   return $out;
 }
 
+# --------------------------
+# Tokens storage helpers
+# --------------------------
 sub tokens_path {
   my ($cfg) = @_;
-  if ($cfg->{token_store_path}) {
+  if ($cfg && $cfg->{token_store_path}) {
     my ($vol, $dir, undef) = File::Spec->splitpath($cfg->{token_store_path});
     make_path($dir) unless -d $dir;
     return $cfg->{token_store_path};
@@ -153,6 +138,10 @@ sub save_tokens {
   chmod 0640, $path;
 }
 
+# --------------------------
+# Access token handling (refresh)
+# Uses HTTP Basic auth for token endpoint
+# --------------------------
 sub ensure_access_token {
   my ($cfg) = @_;
   my $tok = load_tokens($cfg);
@@ -164,7 +153,6 @@ sub ensure_access_token {
     die "No refresh_token; sign in via UI once (or include offline_access in scope).";
   }
 
-  # Use HTTP Basic authentication for refresh_token grant (per spec)
   my $ua = LWP::UserAgent->new(timeout => 30);
   my $endpoint = $cfg->{auth_server_base} . "/realms/$cfg->{realm}/protocol/openid-connect/token";
 
@@ -185,6 +173,47 @@ sub ensure_access_token {
   return $tok->{access_token};
 }
 
+# --------------------------
+# HTTP GET with retries and URL-encoded query string
+# --------------------------
+sub get_json_with_retry {
+  my ($url, $headers, $params, $attempts) = @_;
+  $attempts = ($attempts && $attempts > 0) ? $attempts : 3;
+  my $ua = LWP::UserAgent->new(timeout => 30);
+
+  # URL-encode query parameters
+  my $qs = '';
+  if ($params && ref $params eq 'HASH' && keys %$params) {
+    my @pairs = map {
+      my $k = $_;
+      my $v = defined $params->{$k} ? $params->{$k} : '';
+      uri_escape_utf8($k) . '=' . uri_escape_utf8($v)
+    } sort keys %$params;
+    $qs = join '&', @pairs;
+  }
+  my $full_url = $qs ne '' ? "$url?$qs" : $url;
+
+  my ($last_code, $last_body) = (undef, undef);
+
+  for my $i (0..$attempts-1) {
+    my $req = HTTP::Request->new(GET => $full_url);
+    for my $k (keys %{$headers // {}}) {
+      $req->header($k => $headers->{$k});
+    }
+    my $res = $ua->request($req);
+    if ($res->is_success) {
+      return decode_json($res->decoded_content);
+    }
+    $last_code = $res->code;
+    $last_body = eval { $res->decoded_content } // '';
+    sleep($i == 0 ? 1 : (2**$i));
+  }
+  die "GET $full_url failed after $attempts attempts; last HTTP $last_code: $last_body";
+}
+
+# --------------------------
+# fetch_window: try customerTariffs, fallback to public tariffs
+# --------------------------
 sub fetch_window {
   my ($cfg, $access, $start_iso, $end_iso) = @_;
   my %hdr = ( Authorization => "Bearer $access", accept => "application/json" );
@@ -210,7 +239,7 @@ sub fetch_window {
     my $payload = get_json_with_retry(
       "$base/tariffs", \%hdr,
       {
-        tariff_name    => $cfg->{fallback_tariff_name},
+        tariff_name     => $cfg->{fallback_tariff_name},
         start_timestamp => $start_iso,
         end_timestamp   => $end_iso,
       },
@@ -221,44 +250,9 @@ sub fetch_window {
   };
 }
 
-sub fetch_window {
-  my ($cfg, $access, $start_iso, $end_iso) = @_;
-  my %hdr = ( Authorization => "Bearer $access", accept => "application/json" );
-  my $base = $cfg->{api_base};
-  my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
-
-  eval {
-    my $params = {
-      ems_instance_id => $cfg->{ems_instance_id},
-      start_timestamp => $start_iso,
-      end_timestamp   => $end_iso,
-    };
-    my $payload = get_json_with_retry("$base/customerTariffs", \%hdr, $params, int($cfg->{retries}));
-    eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'customer', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
-    return ($payload, 'customer');
-  } or do {
-    my $err = $@ || 'unknown error';
-    if (open my $fh, '>>', $logfile) {
-      print $fh scalar(localtime) . " - customerTariffs failed: $err\n";
-      close $fh;
-    }
-    # Fallback to public tariffs WITH window
-    my $payload = get_json_with_retry(
-      "$base/tariffs", \%hdr,
-      {
-        tariff_name    => $cfg->{fallback_tariff_name},
-        start_timestamp => $start_iso,
-        end_timestamp   => $end_iso,
-      },
-      int($cfg->{retries})
-    );
-    eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
-    return ($payload, 'public');
-  };
-}
-
-# --- EKZ EMS linking helpers ---
-
+# --------------------------
+# EMS linking & helpers (must appear AFTER get_json_with_retry and fetch_window)
+# --------------------------
 sub ems_link_status {
   my ($cfg, $access, $redirect_uri) = @_;
   my %hdr = ( Authorization => "Bearer $access", accept => "application/json" );
@@ -266,21 +260,16 @@ sub ems_link_status {
 
   my $params = {
     ems_instance_id => $cfg->{ems_instance_id},
-    redirect_uri    => $redirect_uri,  # where EKZ should send the user back after linking
+    redirect_uri    => $redirect_uri,
   };
 
-  my $j = get_json_with_retry("$base/emsLinkStatus", \%hdr, $params, int($cfg->{retries}));
-  # Expected shape (per swagger):
-  # { "link_status": "linked" | "link_required", "linking_process_redirect_uri": "https://..." }
-  return $j;
+  return get_json_with_retry("$base/emsLinkStatus", \%hdr, $params, int($cfg->{retries}));
 }
 
 sub ensure_linked {
   my ($cfg) = @_;
   my $access = ensure_access_token($cfg);
 
-  # Build an absolute return URL for the linking flow, derived from the configured OAuth redirect_uri
-  # If redirect_uri is not configured, fall back to a best-effort relative path (still try to be correct)
   my $oauth_cb = ($cfg->{redirect_uri} && $cfg->{redirect_uri} ne '')
     ? $cfg->{redirect_uri}
     : ($BASEURL ? "$BASEURL/callback.cgi" : '');
@@ -297,7 +286,6 @@ sub ensure_linked {
   return ('linked', undef);
 }
 
-# Optional direct helper to fetch customer tariffs without fallback
 sub fetch_customer_tariffs_window {
   my ($cfg, $start_iso, $end_iso) = @_;
   my $access = ensure_access_token($cfg);
@@ -310,6 +298,31 @@ sub fetch_customer_tariffs_window {
     int($cfg->{retries})
   );
 }
+
+sub has_tokens {
+  my ($cfg) = @_;
+  my $tok = load_tokens($cfg) || {};
+  return 1 if ($tok->{refresh_token});
+  return 1 if ($tok->{access_token} && $tok->{expires_at} && time() < ($tok->{expires_at} - 30));
+  return 0;
+}
+
+sub try_ensure_linked {
+  my ($cfg) = @_;
+  return ('not_signed_in', undef, undef) unless has_tokens($cfg);
+
+  my ($status, $link_url);
+  my $err;
+  eval {
+    ($status, $link_url) = ensure_linked($cfg);
+    1;
+  } or do {
+    $err = $@ || 'unknown error';
+    $status = 'error';
+  };
+  return ($status, $link_url, $err);
+}
+
 sub build_scheduled_window {
   # today 18:00 local → +24h, include timezone offset like +01:00
   my $now = localtime;
