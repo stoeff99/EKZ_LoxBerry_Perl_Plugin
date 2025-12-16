@@ -16,13 +16,11 @@ my $cfg = load_cfg();
 my ($link_status, $link_url) = ensure_linked($cfg);
 
 if ($link_status eq 'linked') {
-  # Go to main UI
   my $index = ($lbpurl && $lbpurl ne '') ? "$lbpurl/index.cgi" : "index.cgi";
   print $q->redirect($index);
   exit;
 }
 
-# If still not linked, inform user and provide a link
 print $q->header('text/html; charset=utf-8');
 print <<"HTML";
 <!doctype html>
