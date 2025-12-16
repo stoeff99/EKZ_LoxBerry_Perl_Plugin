@@ -67,6 +67,33 @@ sub load_cfg {
   return $cfg;
 }
 
+sub has_tokens {
+  my ($cfg) = @_;
+  my $tok = load_tokens($cfg) || {};
+  return 1 if ($tok->{refresh_token});
+  # optionally consider a still-valid access token
+  return 1 if ($tok->{access_token} && $tok->{expires_at} && time() < ($tok->{expires_at} - 30));
+  return 0;
+}
+
+# Wrapper that never dies; returns (status, link_url, err)
+# status: 'linked' | 'link_required' | 'not_signed_in' | 'error'
+sub try_ensure_linked {
+  my ($cfg) = @_;
+  return ('not_signed_in', undef, undef) unless has_tokens($cfg);
+
+  my ($status, $link_url);
+  my $err;
+  eval {
+    ($status, $link_url) = ensure_linked($cfg);
+    1;
+  } or do {
+    $err = $@ || 'unknown error';
+    $status = 'error';
+  };
+  return ($status, $link_url, $err);
+}
+
 sub publish_mqtt {
   my ($cfg, $topic, $payload) = @_;
 
