@@ -37,12 +37,12 @@ sub load_cfg {
   }
 
   my %defaults = (
-    auth_server_base     => 'https://login-test.ekz.ch/auth',
+    auth_server_base     => 'https://login.ekz.ch/auth',
     realm                => 'myEKZ',
     client_id            => 'ems-bowles',
     client_secret        => $cfg->{client_secret} // '',
     redirect_uri         => ($cfg->{redirect_uri} // ($BASEURL ? "$BASEURL/callback.cgi" : '')),
-    api_base             => 'https://test-api.tariffs.ekz.ch/v1',
+    api_base             => 'https://api.tariffs.ekz.ch/v1',
     ems_instance_id      => 'ems-bowles',
     scope                => 'openid',
     response_mode        => 'query',
