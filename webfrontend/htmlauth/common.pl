@@ -179,20 +179,33 @@ sub fetch_window {
   my ($cfg, $access, $start_iso, $end_iso) = @_;
   my %hdr = ( Authorization => "Bearer $access", accept => "application/json" );
   my $base = $cfg->{api_base};
+  my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
 
   eval {
-    my $payload = get_json_with_retry(
-      "$base/customerTariffs", \%hdr,
-      { ems_instance_id => $cfg->{ems_instance_id}, start_timestamp => $start_iso, end_timestamp => $end_iso },
-      int($cfg->{retries})
-    );
+    # Ensure timestamps are URL-encoded
+    my $params = {
+      ems_instance_id => $cfg->{ems_instance_id},
+      start_timestamp => $start_iso,
+      end_timestamp   => $end_iso,
+    };
+    my $payload = get_json_with_retry("$base/customerTariffs", \%hdr, $params, int($cfg->{retries}));
+    # publish source and return
+    eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'customer', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
     return ($payload, 'customer');
   } or do {
+    my $err = $@ || 'unknown error';
+    # Log error details for debugging
+    if (open my $fh, '>>', $logfile) {
+      print $fh scalar(localtime) . " - customerTariffs failed: $err\n";
+      close $fh;
+    }
+    # Fallback to public tariffs
     my $payload = get_json_with_retry(
       "$base/tariffs", \%hdr,
       { tariff_name => $cfg->{fallback_tariff_name} },
       int($cfg->{retries})
     );
+    eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
     return ($payload, 'public');
   };
 }
