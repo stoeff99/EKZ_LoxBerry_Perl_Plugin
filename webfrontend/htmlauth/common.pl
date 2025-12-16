@@ -243,10 +243,14 @@ sub ensure_linked {
   my ($cfg) = @_;
   my $access = ensure_access_token($cfg);
 
-  # Prefer configured redirect_uri; otherwise use plugin local handler
-  my $return_uri = ($cfg->{redirect_uri} && $cfg->{redirect_uri} ne '')
+  # Build an absolute return URL for the linking flow, derived from the configured OAuth redirect_uri
+  # If redirect_uri is not configured, fall back to a best-effort relative path (still try to be correct)
+  my $oauth_cb = ($cfg->{redirect_uri} && $cfg->{redirect_uri} ne '')
     ? $cfg->{redirect_uri}
-    : ($BASEURL ? "$BASEURL/link_return.cgi" : '');
+    : ($BASEURL ? "$BASEURL/callback.cgi" : '');
+
+  my $return_uri = $oauth_cb;
+  $return_uri =~ s{/callback\.cgi$}{/link_return.cgi};
 
   my $st = ems_link_status($cfg, $access, $return_uri);
 
