@@ -2,19 +2,16 @@
 use strict;
 use warnings;
 
-use LoxBerry::System;            # import SDK globals (paths/urls)
 use CGI;
 use JSON::PP;
 use File::Spec;
 use File::Path qw(make_path);
 use FindBin;
-# Optional: show errors in browser while debugging
-# use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
+use LoxBerry::System;
 
-# Declare SDK globals so 'strict' allows them
-our ($lbpurl, $lbpdatadir, $lbptemplatedir);
+our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
-# Use SDK base URL if present; otherwise derive from current script path
+# Base URL
 my $BASEURL = $lbpurl;
 if (!$BASEURL) {
     my $path = $ENV{SCRIPT_NAME} // '';
@@ -22,105 +19,67 @@ if (!$BASEURL) {
     $BASEURL = $path || '.';
 }
 
+# Load shared config loader
+require File::Spec->catfile($FindBin::Bin, 'common.pl');
+
 my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
 
-# Use the SDK globals
-my $LBPDATADIR = $lbpdatadir;    # e.g. /opt/loxberry/data/plugins/<folder>
-my $LBPURL     = $lbpurl;        # e.g. /admin/loxberry/webfrontend/htmlauth/plugins/<folder>
+my $LBPDATADIR = $lbpdatadir;
+my $LBPURL     = $lbpurl;
 
-
-# --- Ensure data dir exists ---
+# Ensure data dir exists
 eval { make_path($LBPDATADIR) unless -d $LBPDATADIR; 1 } or do {
     print "<p style='color:#b00'>Failed to create data dir $LBPDATADIR: $@</p>";
     exit;
 };
 
-# --- Config file path ---
+# Paths
 my $cfgfile = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
 
-# --- Defaults ---
-# NOTE: If you haven't renamed callback.pl -> callback.cgi yet, either rename it
-# or temporarily change the default below back to .../callback.pl.
-my %defaults = (
-  auth_server_base     => 'https://login.ekz.ch/auth',
-  realm                => 'myEKZ',
-  client_id            => 'ems-bowles',
-  client_secret        => '',
-  redirect_uri         => "https://ems.bowles.ch/admin/plugins/ekz_plugin/callback.cgi",
-  #redirect_uri         => "$LBPURL/callback.cgi",
-  api_base             => 'https://api.tariffs.ekz.ch/v1',
-  ems_instance_id      => 'ems-bowles',
-  scope                => 'openid offline_access',            # add 'offline_access' if allowed
-  response_mode        => 'query',
-  timezone             => 'Europe/Zurich',
-  mqtt_enabled         => JSON::PP::true,
-    mqtt_host            => 'localhost',
-    mqtt_port            => 1883,
-    mqtt_username        => '',
-    mqtt_password        => '',
-    mqtt_topic_raw       => 'ekz/ems/tariffs/raw',
-  mqtt_topic_summary   => 'ekz/ems/tariffs/now_plus_24h',
-  fallback_tariff_name => 'electricity_standard',
-  retries              => 3,
-  token_store_path     => ''
-);
-
-# --- Load config (merge with defaults) ---
-my $cfg = { %defaults };
-if (-f $cfgfile) {
-    if (open my $fh, '<', $cfgfile) {
-        local $/ = undef;
-        my $raw = <$fh>;
-        close $fh;
-        my $loaded = eval { decode_json($raw) };
-        if ($@) {
-            print "<p style='color:#b00'>Invalid JSON in $cfgfile: $@</p>";
-        } elsif ($loaded && ref $loaded eq 'HASH') {
-            $cfg = { %defaults, %$loaded };
-            # Normalize any old .pl redirect to .cgi
-            $cfg->{redirect_uri} =~ s/callback\.pl/callback.cgi/;
-        }
-    } else {
-        print "<p style='color:#b00'>Cannot read $cfgfile: $!</p>";
-    }
+# Load current cfg (runtime or shipped default via common.pl::load_cfg)
+my $cfg = eval { load_cfg() };
+if ($@) {
+  print "<p style='color:#b00'>Cannot load configuration: $@</p>";
+  $cfg = {};
 }
 
-# --- Handle POST ---
+# Handle POST
 my $msg = '';
 if ($q->request_method eq 'POST') {
-        my @fields = qw/
-            auth_server_base realm client_id redirect_uri api_base ems_instance_id
-            scope response_mode timezone mqtt_topic_raw mqtt_topic_summary
-            mqtt_host mqtt_port mqtt_username
-            fallback_tariff_name token_store_path
-        /;
+    # Define which fields are editable via this form
+    my @fields = qw/
+      auth_server_base realm client_id redirect_uri api_base ems_instance_id
+      scope response_mode timezone
+      mqtt_enabled mqtt_host mqtt_port mqtt_username mqtt_topic_raw mqtt_topic_summary
+      fallback_tariff_name retries token_store_path
+    /;
 
+    # Update booleans and strings
     for my $f (@fields) {
         my $v = $q->param($f);
-        $cfg->{$f} = defined $v ? $v : $cfg->{$f};
+        if ($f eq 'mqtt_enabled') {
+            $cfg->{$f} = $q->param('mqtt_enabled') ? JSON::PP::true : JSON::PP::false;
+        } else {
+            $cfg->{$f} = defined $v ? $v : $cfg->{$f};
+        }
     }
 
-    # mqtt_enabled checkbox
-    $cfg->{mqtt_enabled} = $q->param('mqtt_enabled') ? JSON::PP::true : JSON::PP::false;
-
-        # client_secret: only update if non-empty provided
+    # Sensitive fields: only update if non-empty
     if (defined $q->param('client_secret')) {
       my $newsec = $q->param('client_secret');
       if (defined $newsec && $newsec ne '') {
         $cfg->{client_secret} = $newsec;
       }
     }
+    if (defined $q->param('mqtt_password')) {
+      my $newpass = $q->param('mqtt_password');
+      if (defined $newpass && $newpass ne '') {
+        $cfg->{mqtt_password} = $newpass;
+      }
+    }
 
-        # mqtt_password: only update if non-empty provided
-        if (defined $q->param('mqtt_password')) {
-            my $newpw = $q->param('mqtt_password');
-            if (defined $newpw && $newpw ne '') {
-                $cfg->{mqtt_password} = $newpw;
-            }
-        }
-
-    # write file
+    # Write JSON
     if (open my $fh, '>', $cfgfile) {
         print $fh encode_json($cfg);
         close $fh;
