@@ -78,5 +78,17 @@ touch "$PLOG/install.log"
 chmod 0644 "$PLOG/install.log"
 chown loxberry:loxberry "$PLOG/install.log"
 
+# -------- Seed runtime config from shipped defaults if missing --------
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DEFAULT_CFG="$SCRIPT_DIR/config/ekz_config.json"
+RUNTIME_CFG="$PDATA/ekz_config.json"
+
+if [ ! -f "$RUNTIME_CFG" ] && [ -f "$DEFAULT_CFG" ]; then
+  cp -f "$DEFAULT_CFG" "$RUNTIME_CFG"
+  chmod 0640 "$RUNTIME_CFG"
+  chown loxberry:loxberry "$RUNTIME_CFG"
+  echo "<OK> Seeded default config to $RUNTIME_CFG"
+fi
+
 echo "<OK> postinstall.sh completed."
 exit 0
