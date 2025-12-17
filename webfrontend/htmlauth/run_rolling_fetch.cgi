@@ -2,34 +2,35 @@
 use strict;
 use warnings;
 
-# Show Perl runtime errors in the browser for debugging (remove or restrict later)
+# Show Perl runtime errors in the browser for debugging (remove later if desired)
 use CGI::Carp qw(fatalsToBrowser);
 
 use CGI;
 use JSON::PP;
 use File::Spec;
 use LoxBerry::System;
+use LoxBerry::Log;   # <-- REQUIRED for LOGSTART/LOGINF/LOGERR
 use FindBin;
 require "$FindBin::Bin/common.pl";
 
-our ($lbpdatadir, $lbpurl, $lbptemplatedir);
+# Include $lbplogdir here
+our ($lbpdatadir, $lbpurl, $lbptemplatedir, $lbplogdir);
 
 my $q = CGI->new;
-
-# We'll always send JSON content-type (even on errors)
 print $q->header('application/json; charset=utf-8');
 
-# Logger (plugin log folder)
+# Initialize plugin logger
 my $log = LoxBerry::Log->new(
-  name       => 'fetch',
-  filename   => "$lbplogdir/fetch.log",
-  append     => 1,
-  loglevel   => 6,   # INFO
-  addtime    => 1,
-  stderr     => 0,
-  nosession  => 1,
+  name      => 'fetch',
+  filename  => "$lbplogdir/fetch.log",
+  append    => 1,
+  loglevel  => 6,   # INFO
+  addtime   => 1,
+  stderr    => 0,
+  nosession => 1,
 );
-LOGSTART "run_rolling_fetch started";
+
+LOGSTART("run_rolling_fetch started");  # <-- parentheses + semicolon
 
 # Run the main logic inside an eval to capture any die() and return JSON error details
 my $ok = eval {
