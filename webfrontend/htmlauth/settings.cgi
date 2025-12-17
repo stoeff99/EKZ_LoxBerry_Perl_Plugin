@@ -2,263 +2,278 @@
 use strict;
 use warnings;
 
+use LoxBerry::System;
 use CGI;
 use JSON::PP;
 use File::Spec;
 use File::Path qw(make_path);
 use FindBin;
-use LoxBerry::System;
 
-our ($lbpdatadir, $lbpurl, $lbptemplatedir);
+# our SDK globals
+our ($lbpurl, $lbpdatadir, $lbptemplatedir, $lbhomedir, $lbpplugindir, $lbphtmlauthdir);
 
-# safe HTML escape helper
+# Simple HTML escape
 sub h { return '' unless defined $_[0]; return CGI::escapeHTML($_[0]); }
 
-# Base URL
-my $BASEURL = $lbpurl;
-if (!$BASEURL) {
-    my $path = $ENV{SCRIPT_NAME} // '';
-    $path =~ s{/[^/]+$}{};
-    $BASEURL = $path || '.';
-}
-
-# Load shared config loader
-require "$FindBin::Bin/common.pl";
+# Resolve base URL and assets
+my $BASEURL    = $lbpurl || do { (my $p = $ENV{SCRIPT_NAME}//'') =~ s{/[^/]+$}{}r || '.' };
+my $ASSET_BASE = "$BASEURL/assets";
+my $ICON_BASE  = "$BASEURL/Icons";
 
 my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
 
-my $LBPDATADIR = $lbpdatadir;
-my $LBPURL     = $lbpurl;
-
 # Ensure data dir exists
+my $LBPDATADIR = $lbpdatadir;
 eval { make_path($LBPDATADIR) unless -d $LBPDATADIR; 1 } or do {
-    print "<p style='color:#b00'>Failed to create data dir $LBPDATADIR: $@</p>";
-    exit;
+  print "<p class='alert alert-err'>Failed to create data dir " . h($LBPDATADIR) . ": " . h($@) . "</p>";
+  exit;
 };
 
-# Paths
+# Config file
 my $cfgfile = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
 
-# Load current cfg (runtime or shipped default via common.pl::load_cfg)
-my $cfg = eval { load_cfg() };
-if ($@) {
-  print "<p style='color:#b00'>Cannot load configuration: " . h($@) . "</p>";
-  $cfg = {};
+# Load config from file (if any)
+my $cfg_from_file;
+if (-f $cfgfile) {
+  if (open my $fh, '<', $cfgfile) {
+    local $/ = undef;
+    my $raw = <$fh>; close $fh;
+    $cfg_from_file = eval { decode_json($raw) };
+  }
 }
 
-# Handle POST
+# Defaults + merge
+my %defaults = (
+  auth_server_base     => 'https://login-test.ekz.ch/auth',
+  realm                => 'myEKZ',
+  client_id            => 'ems-bowles',
+  client_secret        => ($cfg_from_file && $cfg_from_file->{client_secret}) ? $cfg_from_file->{client_secret} : '',
+  redirect_uri         => ($cfg_from_file && $cfg_from_file->{redirect_uri}) ? $cfg_from_file->{redirect_uri} : 'https://ems.bowles.ch/callback.cgi',
+  api_base             => 'https://test-api.tariffs.ekz.ch/v1',
+  ems_instance_id      => 'ems-bowles',
+  scope                => 'openid',
+  response_mode        => 'query',
+  timezone             => 'Europe/Zurich',
+  mqtt_enabled         => JSON::PP::true,
+  mqtt_host            => 'localhost',
+  mqtt_port            => 1883,
+  mqtt_username        => '',
+  mqtt_password        => '',
+  mqtt_topic_raw       => 'ekz/ems/tariffs/raw',
+  mqtt_topic_summary   => 'ekz/ems/tariffs/now_plus_24h',
+  fallback_tariff_name => 'electricity_standard',
+  retries              => 3,
+  token_store_path     => '',
+  fetch_schedule       => '1'
+);
+my $cfg = { %defaults, %{ $cfg_from_file // {} } };
+$cfg->{redirect_uri} =~ s/callback\.pl/callback.cgi/;
+
+# POST handling
 my $msg = '';
 if ($q->request_method eq 'POST') {
-    # Define which fields are editable via this form
-    my @fields = qw/
-      auth_server_base realm client_id redirect_uri api_base ems_instance_id
-      scope response_mode timezone
-      mqtt_enabled mqtt_host mqtt_port mqtt_username mqtt_topic_raw mqtt_topic_summary
-      fallback_tariff_name retries token_store_path fetch_schedule
-    /;
+  my @fields = qw/
+    auth_server_base realm client_id redirect_uri api_base ems_instance_id
+    scope response_mode timezone mqtt_topic_raw mqtt_topic_summary
+    mqtt_host mqtt_port mqtt_username
+    fallback_tariff_name token_store_path fetch_schedule
+  /;
+  for my $f (@fields) {
+    my $v = $q->param($f);
+    $cfg->{$f} = defined $v ? $v : $cfg->{$f};
+  }
+  $cfg->{mqtt_enabled} = $q->param('mqtt_enabled') ? JSON::PP::true : JSON::PP::false;
 
-    # Update booleans and strings
-    for my $f (@fields) {
-        my $v = $q->param($f);
-        if ($f eq 'mqtt_enabled') {
-            # checkbox: present when checked
-            $cfg->{$f} = $q->param('mqtt_enabled') ? JSON::PP::true : JSON::PP::false;
-        } else {
-            $cfg->{$f} = defined $v ? $v : $cfg->{$f};
-        }
-    }
+  if (defined $q->param('client_secret')) {
+    my $newsec = $q->param('client_secret');
+    $cfg->{client_secret} = $newsec if defined $newsec && $newsec ne '';
+  }
+  if (defined $q->param('mqtt_password')) {
+    my $newpw = $q->param('mqtt_password');
+    $cfg->{mqtt_password} = $newpw if defined $newpw && $newpw ne '';
+  }
 
-    # Sensitive fields: only update if non-empty
-    if (defined $q->param('client_secret')) {
-      my $newsec = $q->param('client_secret');
-      if (defined $newsec && $newsec ne '') {
-        $cfg->{client_secret} = $newsec;
-      }
-    }
-    if (defined $q->param('mqtt_password')) {
-      my $newpass = $q->param('mqtt_password');
-      if (defined $newpass && $newpass ne '') {
-        $cfg->{mqtt_password} = $newpass;
-      }
-    }
-
-    # Write JSON
-    if (open my $fh, '>', $cfgfile) {
-        print $fh encode_json($cfg);
-        close $fh;
-        chmod 0640, $cfgfile;
-
-        # Update cron schedule (best-effort)
-        my $cron_ok = update_cron_schedule($cfg->{fetch_schedule}, $LBPURL);
-        if ($cron_ok) {
-            $msg = "<div style='color:#080'>Settings saved. Fetch schedule updated.</div>";
-        } else {
-            $msg = "<div style='color:#b00'>Settings saved, but failed to update cron schedule. Check logs.</div>";
-        }
-    } else {
-        $msg = "<div style='color:#b00'>Error: cannot write $cfgfile: " . h($!) . "</div>";
-    }
+  if (open my $fh, '>', $cfgfile) {
+    print $fh encode_json($cfg);
+    close $fh;
+    chmod 0640, $cfgfile;
+    my $ok = update_cron_schedule($cfg->{fetch_schedule});
+    $msg = $ok ? "<div class='alert alert-ok'>Settings saved. Cron schedule updated.</div>"
+               : "<div class='alert alert-warn'>Settings saved but cron update failed. Check permissions.</div>";
+  } else {
+    $msg = "<div class='alert alert-err'>Cannot write " . h($cfgfile) . ": " . h($!) . "</div>";
+  }
 }
 
-# --- Render HTML ---
-print '<!doctype html><html><head><meta charset="utf-8"><title>EKZ Settings</title>';
-print '<style>body{font-family:system-ui,Arial,sans-serif;max-width:780px;margin:1.2rem auto}';
-print 'fieldset{margin-bottom:1rem}label{display:block;margin:.4rem 0}';
-print 'input[type=text],input[type=password],select{width:100%;max-width:780px}';
-print 'button{padding:.4rem .9rem}.actions{margin-top:1rem}</style></head><body>';
-print '<h2>EKZ Settings</h2>';
-print $msg if $msg;
+# Render
+print <<"HTML";
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>EKZ Settings</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
+  <link rel="stylesheet" href="$ASSET_BASE/styles.css">
+</head>
+<body>
+  <div class="app-header">
+    <div class="banner">
+      <div class="title">EKZ Tariffs – Plugin Settings</div>
+    </div>
+  </div>
 
-print '<form method="post">';
+  <div class="nav-actions">
+    <a class="btn btn-primary" href="@{[ h($BASEURL) ]}/signin.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
+    <a class="btn btn-green"   href="@{[ h($BASEURL) ]}/run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now (rolling 24h)</a>
+    <a class="btn btn-orange"  href="@{[ h($BASEURL) ]}/health.cgi"><span class="emoji">🩺</span> Health</a>
+    <a class="btn btn-slate"   href="@{[ h($BASEURL) ]}/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
+  </div>
 
-print '<fieldset><legend>EKZ / OIDC</legend>';
-print '<label>Auth server base<br><input name="auth_server_base" type="text" size="60" value="' . h($cfg->{auth_server_base}) . '"></label>';
-print '<label>Realm<br><input name="realm" type="text" value="' . h($cfg->{realm}) . '"></label>';
-print '<label>Client ID<br><input name="client_id" type="text" value="' . h($cfg->{client_id}) . '"></label>';
-print '<label>Client secret<br><input type="password" name="client_secret" placeholder="(enter to update)"></label>';
-print '<label>Redirect URI<br><input name="redirect_uri" type="text" size="80" value="' . h($cfg->{redirect_uri}) . '"></label>';
-print '<label>API base<br><input name="api_base" type="text" size="60" value="' . h($cfg->{api_base}) . '"></label>';
-print '<label>EMS instance ID<br><input name="ems_instance_id" type="text" value="' . h($cfg->{ems_instance_id}) . '"></label>';
-print '<label>Scope<br><input name="scope" type="text" value="' . h($cfg->{scope}) . '"> <small>Use <code>openid offline_access</code> if allowed.</small></label>';
-print '<label>Response mode<br><input name="response_mode" type="text" value="' . h($cfg->{response_mode}) . '"></label>';
-print '<label>Timezone<br><input name="timezone" type="text" value="' . h($cfg->{timezone}) . '"></label>';
-print '</fieldset>';
+  <div class="container">
+    <div class="card">
+      $msg
+      <form method="post" autocomplete="off" novalidate>
 
-print '<fieldset><legend>MQTT</legend>';
-my $mqtt_checked = ($cfg->{mqtt_enabled} ? ' checked' : '');
-print '<label><input type="checkbox" name="mqtt_enabled"' . $mqtt_checked . '> Enable MQTT</label>';
-print '<label>Broker host<br><input name="mqtt_host" type="text" value="' . h($cfg->{mqtt_host}) . '"></label>';
-print '<label>Broker port<br><input name="mqtt_port" type="text" value="' . h($cfg->{mqtt_port}) . '"></label>';
-print '<label>Username (optional)<br><input name="mqtt_username" type="text" value="' . h($cfg->{mqtt_username}) . '"></label>';
-print '<label>Password (optional)<br><input type="password" name="mqtt_password" placeholder="(enter to update)"></label>';
-print '<label>Raw topic<br><input name="mqtt_topic_raw" type="text" size="50" value="' . h($cfg->{mqtt_topic_raw}) . '"></label>';
-print '<label>Summary topic<br><input name="mqtt_topic_summary" type="text" size="50" value="' . h($cfg->{mqtt_topic_summary}) . '"></label>';
-print '<label>Fallback tariff name<br><input name="fallback_tariff_name" type="text" value="' . h($cfg->{fallback_tariff_name}) . '"></label>';
-print '</fieldset>';
+        <fieldset>
+          <legend>EKZ / OIDC</legend>
+          <label>Auth server base</label>
+          <input name="auth_server_base" type="text" size="60" value="@{[ h($cfg->{auth_server_base}) ]}">
+          <label>Realm</label>
+          <input name="realm" type="text" value="@{[ h($cfg->{realm}) ]}">
+          <label>Client ID</label>
+          <input name="client_id" type="text" value="@{[ h($cfg->{client_id}) ]}">
+          <label>Client secret <span class="small">(enter to update)</span></label>
+          <input type="password" name="client_secret" placeholder="••••••••">
+          <label>Redirect URI</label>
+          <input name="redirect_uri" type="text" size="80" value="@{[ h($cfg->{redirect_uri}) ]}">
+          <div class="hint small">Example: https://your.host/admin/plugins/ekz_loxberry_perl_plugin/callback.cgi</div>
+          <label>API base</label>
+          <input name="api_base" type="text" size="60" value="@{[ h($cfg->{api_base}) ]}">
+          <label>EMS instance ID</label>
+          <input name="ems_instance_id" type="text" value="@{[ h($cfg->{ems_instance_id}) ]}">
+          <label>Scope</label>
+          <input name="scope" type="text" value="@{[ h($cfg->{scope}) ]}">
+          <label>Response mode</label>
+          <input name="response_mode" type="text" value="@{[ h($cfg->{response_mode}) ]}">
+          <label>Timezone</label>
+          <input name="timezone" type="text" value="@{[ h($cfg->{timezone}) ]}">
+        </fieldset>
 
-print '<fieldset><legend>Advanced</legend>';
-print '<label>Token store path (optional)<br><input name="token_store_path" type="text" size="80" value="' . h($cfg->{token_store_path}) . '"><br>';
-print '<small>Example: <code>/opt/loxberry/data/ekz/tokens.json</code></small></label>';
+        <fieldset>
+          <legend>MQTT</legend>
+          <label><input type="checkbox" name="mqtt_enabled" @{[ $cfg->{mqtt_enabled} ? 'checked' : '' ]}> Enable MQTT</label>
+          <label>Broker host</label>
+          <input name="mqtt_host" type="text" value="@{[ h($cfg->{mqtt_host}) ]}">
+          <label>Broker port</label>
+          <input name="mqtt_port" type="text" value="@{[ h($cfg->{mqtt_port}) ]}">
+          <label>Username (optional)</label>
+          <input name="mqtt_username" type="text" value="@{[ h($cfg->{mqtt_username}) ]}">
+          <label>Password (optional) <span class="small">(enter to update)</span></label>
+          <input type="password" name="mqtt_password" placeholder="••••••••">
+          <label>Raw topic</label>
+          <input name="mqtt_topic_raw" type="text" size="50" value="@{[ h($cfg->{mqtt_topic_raw}) ]}">
+          <label>Summary topic</label>
+          <input name="mqtt_topic_summary" type="text" size="50" value="@{[ h($cfg->{mqtt_topic_summary}) ]}">
+          <label>Fallback tariff name</label>
+          <input name="fallback_tariff_name" type="text" value="@{[ h($cfg->{fallback_tariff_name}) ]}">
+        </fieldset>
 
-# Fetch schedule select
-my $sel_fetch = defined $cfg->{fetch_schedule} ? $cfg->{fetch_schedule} : '0';
-print '<label>Fetch schedule<br>';
-print '<select name="fetch_schedule">';
-print '<option value="0"' . ($sel_fetch eq '0' ? ' selected' : '') . '>Disabled</option>';
-print '<option value="1"' . ($sel_fetch eq '1' ? ' selected' : '') . '>Once per day (18:05)</option>';
-print '<option value="2"' . ($sel_fetch eq '2' ? ' selected' : '') . '>Twice per day (06:05 & 18:05)</option>';
-print '<option value="12"' . ($sel_fetch eq '12' ? ' selected' : '') . '>Every 2 hours</option>';
-print '<option value="24"' . ($sel_fetch eq '24' ? ' selected' : '') . '>Every hour</option>';
-print '</select></label>';
+        <fieldset>
+          <legend>Scheduling</legend>
+          <label>Fetch frequency</label>
+          <select name="fetch_schedule">
+            <option value="1"  @{[ $cfg->{fetch_schedule} eq '1'  ? 'selected' : '' ]}>1x per day (at 18:05)</option>
+            <option value="2"  @{[ $cfg->{fetch_schedule} eq '2'  ? 'selected' : '' ]}>2x per day (at 18:05 and 06:05)</option>
+            <option value="12" @{[ $cfg->{fetch_schedule} eq '12' ? 'selected' : '' ]}>12x per day (every 2 hours)</option>
+            <option value="24" @{[ $cfg->{fetch_schedule} eq '24' ? 'selected' : '' ]}>24x per day (every hour)</option>
+          </select>
+          <div class="hint">Data is published at 18:00 daily. The plugin fetches a rolling 24h window to ensure you always have current + next day data.</div>
+        </fieldset>
 
-print '</fieldset>';
+        <fieldset>
+          <legend>Advanced</legend>
+          <label>Token store path (optional)</label>
+          <input name="token_store_path" type="text" size="80" value="@{[ h($cfg->{token_store_path}) ]}">
+          <div class="hint small">Example: /opt/loxberry/data/ekz/tokens.json</div>
+        </fieldset>
 
-print '<p class="actions"><button type="submit">Save</button> ';
-print '<a href="' . h($BASEURL) . '/index.cgi">Back</a></p>';
+        <div class="hr"></div>
+        <div class="actions">
+          <button type="submit">Save</button>
+          <a href="@{[ h($BASEURL) ]}/index.cgi"><button class="btn-secondary" type="button">Back</button></a>
+        </div>
+      </form>
+    </div>
+  </div>
+</body>
+</html>
+HTML
 
-print '</form></body></html>';
-
-# --- Cron schedule helper: create/remove LoxBerry cron wrapper scripts ---
+# ----------------------------
+# Cron updater (unchanged logic)
+# ----------------------------
 sub update_cron_schedule {
-    my ($schedule, $lbpurl) = @_;
-    my $LBHOME = '/opt/loxberry';
+  my ($schedule) = @_;
+  my $cron_file;
+  my $cron_content;
+  my $fetch_script = "$lbphtmlauthdir/run_rolling_fetch.cgi";
 
-    # Derive plugin folder name from $lbpurl when possible
-    my $plugindir = 'ekz_plugin';
-    if ($lbpurl && $lbpurl =~ m{/admin/[^/]+/plugins/([^/]+)}) {
-        $plugindir = $1;
-    }
+  if ($schedule && $schedule eq '1') {
+    $cron_file = "$lbhomedir/system/cron/cron.daily/$lbpplugindir";
+    $cron_content  = "#!/bin/bash\n# Run at 18:05 daily\n";
+    $cron_content .= "if [ \$(date +\\%H:\\%M) = \"18:05\" ]; then\n";
+    $cron_content .= "  curl -s http://localhost/admin/plugins/$lbpplugindir/run_rolling_fetch.cgi >/dev/null 2>&1\n";
+    $cron_content .= "fi\n";
+  } elsif ($schedule && $schedule eq '2') {
+    $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
+    $cron_content  = "#!/bin/bash\n# Run at 18:05 and 06:05\n";
+    $cron_content .= "HOUR=\$(date +\\%H)\nMINUTE=\$(date +\\%M)\n";
+    $cron_content .= "if [[ \$MINUTE == \"05\" && (\$HOUR == \"18\" || \$HOUR == \"06\") ]]; then\n";
+    $cron_content .= "  curl -s http://localhost/admin/plugins/$lbpplugindir/run_rolling_fetch.cgi >/dev/null 2>&1\n";
+    $cron_content .= "fi\n";
+  } elsif ($schedule && $schedule eq '12') {
+    $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
+    $cron_content  = "#!/bin/bash\n# Run every 2 hours\n";
+    $cron_content .= "HOUR=\$(date +\\%H)\n";
+    $cron_content .= "if (( \$HOUR % 2 == 0 )); then\n";
+    $cron_content .= "  curl -s http://localhost/admin/plugins/$lbpplugindir/run_rolling_fetch.cgi >/dev/null 2>&1\n";
+    $cron_content .= "fi\n";
+  } elsif ($schedule && $schedule eq '24') {
+    $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
+    $cron_content  = "#!/bin/bash\n# Run every hour\n";
+    $cron_content .= "curl -s http://localhost/admin/plugins/$lbpplugindir/run_rolling_fetch.cgi >/dev/null 2>&1\n";
+  } else {
+    my @cron_dirs = ("$lbhomedir/system/cron/cron.01min",
+                     "$lbhomedir/system/cron/cron.03min",
+                     "$lbhomedir/system/cron/cron.05min",
+                     "$lbhomedir/system/cron/cron.10min",
+                     "$lbhomedir/system/cron/cron.15min",
+                     "$lbhomedir/system/cron/cron.30min",
+                     "$lbhomedir/system/cron/cron.hourly",
+                     "$lbhomedir/system/cron/cron.daily");
+    foreach my $dir (@cron_dirs) { unlink "$dir/$lbpplugindir" if -e "$dir/$lbpplugindir" }
+    return 0;
+  }
 
-    my $fetch_script = "/admin/plugins/$plugindir/run_rolling_fetch.cgi";
-    my $cron_file;
-    my $cron_content;
+  my @dirs = ("$lbhomedir/system/cron/cron.01min",
+              "$lbhomedir/system/cron/cron.03min",
+              "$lbhomedir/system/cron/cron.05min",
+              "$lbhomedir/system/cron/cron.10min",
+              "$lbhomedir/system/cron/cron.15min",
+              "$lbhomedir/system/cron/cron.30min",
+              "$lbhomedir/system/cron/cron.hourly",
+              "$lbhomedir/system/cron/cron.daily");
+  foreach my $dir (@dirs) { unlink "$dir/$lbpplugindir" if -e "$dir/$lbpplugindir" }
 
-    if ($schedule eq '1') {
-        # Once per day at 18:05
-        $cron_file = "$LBHOME/system/cron/cron.daily/$plugindir";
-        $cron_content = "#!/bin/bash\n# Run at 18:05 daily\n";
-        $cron_content .= "if [ \$(date +\\%H:\\%M) = \"18:05\" ]; then\n";
-        $cron_content .= "  curl -s http://localhost$fetch_script >/dev/null 2>&1\n";
-        $cron_content .= "fi\n";
-    }
-    elsif ($schedule eq '2') {
-        # Twice per day at 18:05 and 06:05
-        $cron_file = "$LBHOME/system/cron/cron.hourly/$plugindir";
-        $cron_content = "#!/bin/bash\n# Run at 18:05 and 06:05\n";
-        $cron_content .= "HOUR=\$(date +\\%H)\nMINUTE=\$(date +\\%M)\n";
-        $cron_content .= "if [[ \$MINUTE == \"05\" && (\$HOUR == \"18\" || \$HOUR == \"06\") ]]; then\n";
-        $cron_content .= "  curl -s http://localhost$fetch_script >/dev/null 2>&1\n";
-        $cron_content .= "fi\n";
-    }
-    elsif ($schedule eq '12') {
-        # Every 2 hours (12x per day)
-        $cron_file = "$LBHOME/system/cron/cron.hourly/$plugindir";
-        $cron_content = "#!/bin/bash\n# Run every 2 hours\n";
-        $cron_content .= "HOUR=\$(date +\\%H)\n";
-        $cron_content .= "if (( \$HOUR % 2 == 0 )); then\n";
-        $cron_content .= "  curl -s http://localhost$fetch_script >/dev/null 2>&1\n";
-        $cron_content .= "fi\n";
-    }
-    elsif ($schedule eq '24') {
-        # Every hour (24x per day)
-        $cron_file = "$LBHOME/system/cron/cron.hourly/$plugindir";
-        $cron_content = "#!/bin/bash\n# Run every hour\n";
-        $cron_content .= "curl -s http://localhost$fetch_script >/dev/null 2>&1\n";
-    }
-    else {
-        # Treat unknown/0 as disabled — remove existing cron wrappers
-        foreach my $dir ("$LBHOME/system/cron/cron.01min",
-                         "$LBHOME/system/cron/cron.03min",
-                         "$LBHOME/system/cron/cron.05min",
-                         "$LBHOME/system/cron/cron.10min",
-                         "$LBHOME/system/cron/cron.15min",
-                         "$LBHOME/system/cron/cron.30min",
-                         "$LBHOME/system/cron/cron.hourly",
-                         "$LBHOME/system/cron/cron.daily") {
-            my $old = "$dir/$plugindir";
-            unlink $old if -e $old;
-        }
-        return 1;
-    }
+  eval {
+    open my $fh, '>', $cron_file or die "Cannot write $cron_file: $!";
+    print $fh $cron_content;
+    close $fh;
+    chmod 0755, $cron_file;
+    1;
+  } or do { return 0; };
 
-    # Remove old cron files from other locations
-    foreach my $dir ("$LBHOME/system/cron/cron.01min",
-                     "$LBHOME/system/cron/cron.03min",
-                     "$LBHOME/system/cron/cron.05min",
-                     "$LBHOME/system/cron/cron.10min",
-                     "$LBHOME/system/cron/cron.15min",
-                     "$LBHOME/system/cron/cron.30min",
-                     "$LBHOME/system/cron/cron.hourly",
-                     "$LBHOME/system/cron/cron.daily") {
-        my $old_file = "$dir/$plugindir";
-        unlink $old_file if -e $old_file;
-    }
-
-    # Write new cron file
-    eval {
-        my ($dir) = $cron_file =~ m{^(.+)/[^/]+$};
-        if ($dir && !-d $dir) {
-            mkdir $dir or die "Cannot create cron dir $dir: $!";
-        }
-        open my $fh, '>', $cron_file or die "Cannot write $cron_file: $!";
-        print $fh $cron_content;
-        close $fh;
-        chmod 0755, $cron_file;
-        1;
-    } or do {
-        my $err = $@ || 'unknown';
-        # Log to plugin data dir if available
-        eval {
-          my $logfile = File::Spec->catfile($lbpdatadir || '/opt/loxberry/data', 'cron_update.log');
-          if (open my $lf, '>>', $logfile) {
-            print $lf scalar(localtime) . " - update_cron_schedule failed: $err\n";
-            close $lf;
-          }
-          1;
-        };
-        return 0;
-    };
-
-    return 1;
+  return 1;
 }
