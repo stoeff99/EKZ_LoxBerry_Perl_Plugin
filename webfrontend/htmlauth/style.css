@@ -60,7 +60,7 @@ body {
   position: absolute;
   left: 22px;
   bottom: 18px;
-  font-size: 28px;   /* adjust this value to change the page title size */
+  font-size: 36px;   /* adjust this value to change the page title size */
   font-weight: 700;
   text-shadow: 0 2px 6px rgba(0,0,0,.35);
 }
@@ -73,7 +73,7 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  justify-content: center;
+  justify-content: left;
 }
 
 a.btn {
@@ -213,7 +213,7 @@ button:active { transform: translateY(1px); }
 
 /* Status line font size (use with <h2 class="status-title">) */
 .status-title {
-  font-size: 32px;   /* adjust this value to change the "Status: ..." size */
+  font-size: 18px;   /* adjust this value to change the "Status: ..." size */
   font-weight: 800;
   margin: 16px 0 10px;
 }
