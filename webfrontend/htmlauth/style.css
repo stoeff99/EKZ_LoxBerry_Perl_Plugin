@@ -37,7 +37,7 @@ body {
 /* Banner */
 .app-header {
   display: flex;
-  align-items: center;
+  align-items: left;
   justify-content: center;
   margin: 18px auto 0;
 }
