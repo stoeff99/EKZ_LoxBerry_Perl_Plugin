@@ -9,13 +9,13 @@ use File::Spec;
 use File::Path qw(make_path);
 use FindBin;
 
-# our SDK globals
+# SDK globals
 our ($lbpurl, $lbpdatadir, $lbptemplatedir, $lbhomedir, $lbpplugindir, $lbphtmlauthdir);
 
-# Simple HTML escape
+# HTML escape
 sub h { return '' unless defined $_[0]; return CGI::escapeHTML($_[0]); }
 
-# Resolve base URL and assets
+# Base URLs and assets
 my $BASEURL    = $lbpurl || do { (my $p = $ENV{SCRIPT_NAME}//'') =~ s{/[^/]+$}{}r || '.' };
 my $ASSET_BASE = "$BASEURL/assets";
 my $ICON_BASE  = "$BASEURL/Icons";
@@ -30,7 +30,7 @@ eval { make_path($LBPDATADIR) unless -d $LBPDATADIR; 1 } or do {
   exit;
 };
 
-# Config file
+# Config file path
 my $cfgfile = File::Spec->catfile($LBPDATADIR, 'ekz_config.json');
 
 # Load config from file (if any)
@@ -70,7 +70,7 @@ my %defaults = (
 my $cfg = { %defaults, %{ $cfg_from_file // {} } };
 $cfg->{redirect_uri} =~ s/callback\.pl/callback.cgi/;
 
-# POST handling
+# Handle POST
 my $msg = '';
 if ($q->request_method eq 'POST') {
   my @fields = qw/
@@ -106,7 +106,7 @@ if ($q->request_method eq 'POST') {
   }
 }
 
-# Render
+# Render page with shared styles (same as index.cgi)
 print <<"HTML";
 <!doctype html>
 <html>
@@ -115,9 +115,10 @@ print <<"HTML";
   <title>EKZ Settings</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
-  <link rel="stylesheet" href="$ASSET_BASE/styles.css">
+  <link rel="stylesheet" href="$BASEURL/style.css">
+  <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251217">
 </head>
-<body>
+<body id="ekz-plugin" class="plugincontent">
   <div class="app-header">
     <div class="banner">
       <div class="title">EKZ Tariffs – Plugin Settings</div>
@@ -125,7 +126,7 @@ print <<"HTML";
   </div>
 
   <div class="nav-actions">
-    <a class="btn btn-primary" href="@{[ h($BASEURL) ]}/signin.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
+    <a class="btn btn-primary" href="@{[ h($BASEURL) ]}/start.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
     <a class="btn btn-green"   href="@{[ h($BASEURL) ]}/run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now (rolling 24h)</a>
     <a class="btn btn-orange"  href="@{[ h($BASEURL) ]}/health.cgi"><span class="emoji">🩺</span> Health</a>
     <a class="btn btn-slate"   href="@{[ h($BASEURL) ]}/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
@@ -135,7 +136,6 @@ print <<"HTML";
     <div class="card">
       $msg
       <form method="post" autocomplete="off" novalidate>
-
         <fieldset>
           <legend>EKZ / OIDC</legend>
           <label>Auth server base</label>
@@ -148,7 +148,7 @@ print <<"HTML";
           <input type="password" name="client_secret" placeholder="••••••••">
           <label>Redirect URI</label>
           <input name="redirect_uri" type="text" size="80" value="@{[ h($cfg->{redirect_uri}) ]}">
-          <div class="hint small">Example: https://your.host/admin/plugins/ekz_loxberry_perl_plugin/callback.cgi</div>
+          <div class="hint small">Example: https://your.host/admin/plugins/ekz_plugin/callback.cgi</div>
           <label>API base</label>
           <input name="api_base" type="text" size="60" value="@{[ h($cfg->{api_base}) ]}">
           <label>EMS instance ID</label>
@@ -189,7 +189,7 @@ print <<"HTML";
             <option value="12" @{[ $cfg->{fetch_schedule} eq '12' ? 'selected' : '' ]}>12x per day (every 2 hours)</option>
             <option value="24" @{[ $cfg->{fetch_schedule} eq '24' ? 'selected' : '' ]}>24x per day (every hour)</option>
           </select>
-          <div class="hint">Data is published at 18:00 daily. The plugin fetches a rolling 24h window to ensure you always have current + next day data.</div>
+          <div class="hint">Data is published at 18:00 daily. The plugin fetches a rolling 24h window.</div>
         </fieldset>
 
         <fieldset>
@@ -211,14 +211,11 @@ print <<"HTML";
 </html>
 HTML
 
-# ----------------------------
-# Cron updater (unchanged logic)
-# ----------------------------
+# Cron updater (unchanged)
 sub update_cron_schedule {
   my ($schedule) = @_;
   my $cron_file;
   my $cron_content;
-  my $fetch_script = "$lbphtmlauthdir/run_rolling_fetch.cgi";
 
   if ($schedule && $schedule eq '1') {
     $cron_file = "$lbhomedir/system/cron/cron.daily/$lbpplugindir";
