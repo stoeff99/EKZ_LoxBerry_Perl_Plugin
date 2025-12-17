@@ -60,8 +60,8 @@ body {
   position: absolute;
   left: 22px;
   bottom: 18px;
-  font-size: 36px;   /* adjust this value to change the page title size */
-  font-weight: 700;
+  font-size: 36px !important;   /* adjust this to change the page title size */
+  font-weight: 800;
   text-shadow: 0 2px 6px rgba(0,0,0,.35);
 }
 
@@ -73,7 +73,7 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
-  justify-content: left;
+  justify-content: flex-start;   /* left-align; use center or flex-end if you prefer */
 }
 
 a.btn {
@@ -211,16 +211,16 @@ button:active { transform: translateY(1px); }
 .hr    { height: 1px; background: linear-gradient(90deg, rgba(255,255,255,.12), rgba(255,255,255,0)); margin: 14px 0; }
 .small { font-size: 14px; color: var(--muted); }
 
-/* Status line font size (use with <h2 class="status-title">) */
-.status-title {
-  font-size: 18px;   /* adjust this value to change the "Status: ..." size */
+/* Fallback: if index.cgi doesn't add class="status-title", style the H2 on this page */
+#ekz-plugin h2 {
+  font-size: 22px;              /* gentle default if class not used */
   font-weight: 800;
   margin: 16px 0 10px;
 }
 
-/* Fallback: if index.cgi doesn't add class="status-title", style the first H2 on the page */
-#ekz-plugin h2 {
-  font-size: 32px;   /* same as .status-title for consistent look */
+/* Status line font size (use with <h2 class="status-title">) – overrides fallback */
+#ekz-plugin .status-title {
+  font-size: 28px !important;   /* set your preferred size */
   font-weight: 800;
   margin: 16px 0 10px;
 }
