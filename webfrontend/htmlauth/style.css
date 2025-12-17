@@ -1,6 +1,12 @@
 :root{
-  --bg:#0b1220;--fg:#eef3fb;--muted:#9fb0c9;--card:#121a2b;--card-2:#1a2540;
-  --accent:#3aaef9;--radius:14px;--shadow:0 10px 30px rgba(0,0,0,.25);
+  --bg:#0b1220;
+  --fg:#eef3fb;
+  --muted:#9fb0c9;
+  --card:#121a2b;
+  --card-2:#1a2540;
+  --accent:#3aaef9;
+  --radius:14px;
+  --shadow:0 10px 30px rgba(0,0,0,.25);
 }
 *{box-sizing:border-box} html,body{height:100%}
 body{margin:0;background:radial-gradient(1200px 700px at 10% -10%,#173057 0%,transparent 60%),
@@ -12,7 +18,7 @@ body{margin:0;background:radial-gradient(1200px 700px at 10% -10%,#173057 0%,tra
   background:linear-gradient(90deg,rgba(0,0,0,.35),rgba(0,0,0,.15)),
              url('../Icons/banner.jpg') center/cover no-repeat;
   box-shadow:var(--shadow);overflow:hidden;position:relative}
-.app-header .title{position:absolute;left:22px;bottom:18px;font-size:28px;font-weight:700;
+.app-header .title{position:absolute;left:22px;bottom:18px;font-size:36px;font-weight:700;
   text-shadow:0 2px 6px rgba(0,0,0,.35)}
 .nav-actions{max-width:980px;margin:10px auto 12px;padding:0 18px;display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
 a.btn{display:inline-flex;align-items:center;gap:10px;padding:12px 18px;border-radius:12px;font-weight:700;
@@ -76,7 +82,7 @@ body {
   position: absolute;
   left: 22px;
   bottom: 18px;
-  font-size: 28px;
+  font-size: 36px;
   font-weight: 700;
   text-shadow: 0 2px 6px rgba(0,0,0,.35);
 }
