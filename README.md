@@ -27,7 +27,7 @@ Important: You must host this plugin behind your own publicly‑reachable domain
 
 ## What you need
 
-- A LoxBerry installation (tested on LoxBerry 2.x).
+- A LoxBerry installation (tested on LoxBerry 3.x).
 - A publicly reachable HTTPS domain you control (e.g., `https://ems.yourdomain.tld`).
 - A reverse proxy in front of LoxBerry (Caddy or Nginx) that forwards requests for your domain to LoxBerry.
 - Basic Perl runtime (bundled with LoxBerry) and these extras:
