@@ -29,8 +29,8 @@ my ($link_status, $link_url, $err) = try_ensure_linked($cfg) if $signed_in;
 
 print $q->header('text/html; charset=utf-8');
 
-my $status_line = !$signed_in                           ? 'Not signed in'
-                 : (($link_status // '') eq 'linked')        ? 'Linked'
+my $status_line = !$signed_in                           ? 'Not signed in to myEKZ'
+                 : (($link_status // '') eq 'linked')        ? 'Linked to myEKZ'
                  : (($link_status // '') eq 'link_required') ? 'Link required'
                  : 'Unknown';
 
