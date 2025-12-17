@@ -29,9 +29,9 @@ my ($link_status, $link_url, $err) = try_ensure_linked($cfg) if $signed_in;
 
 print $q->header('text/html; charset=utf-8');
 
-my $status_line = !$signed_in                   ? 'Not signed in'
-                 : ($link_status // '') eq 'linked'        ? 'Linked'
-                 : ($link_status // '') eq 'link_required' ? 'Link required'
+my $status_line = !$signed_in                           ? 'Not signed in'
+                 : (($link_status // '') eq 'linked')        ? 'Linked'
+                 : (($link_status // '') eq 'link_required') ? 'Link required'
                  : 'Unknown';
 
 my $linking_note = '';
@@ -48,14 +48,30 @@ print <<"HTML";
   <meta charset="utf-8">
   <title>EKZ Dynamic Price</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
+  <!-- Keep your original plugin stylesheet -->
+  <link rel="stylesheet" href="$BASEURL/style.css">
+  <!-- New stylesheet with banner + button styles (optional) -->
   <link rel="stylesheet" href="$ASSET_BASE/styles.css">
+  <!-- Minimal inline fallback so buttons still look like buttons even if assets/styles.css isn't found -->
+  <style>
+    .nav-actions{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0}
+    a.btn{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border-radius:10px;
+          text-decoration:none;font-weight:700;color:#fff;background:#1892e7}
+    a.btn.btn-green{background:#41a85f}
+    a.btn.btn-orange{background:#ff9f2f;color:#222}
+    a.btn.btn-slate{background:#3a465a}
+    .btn .emoji{font-size:18px;line-height:1}
+    /* Simple banner fallback */
+    .banner{background:url('$ICON_BASE/banner.jpg') center/cover no-repeat;border-radius:10px;height:140px;margin:10px 0;position:relative}
+    .banner .title{position:absolute;left:16px;bottom:14px;font-size:22px;font-weight:700;color:#fff;text-shadow:0 2px 6px rgba(0,0,0,.35)}
+    .alert{padding:8px 10px;border-radius:8px}
+    .alert-warn{background:#fff3cd}
+    .alert-err{background:#f8d7da}
+  </style>
 </head>
-<body>
-  <div class="app-header">
-    <div class="banner">
-      <div class="title">EKZ Dynamic Price</div>
-    </div>
+<body id="ekz-plugin" class="plugincontent">
+  <div class="banner">
+    <div class="title">EKZ Dynamic Price</div>
   </div>
 
   <div class="nav-actions">
@@ -65,13 +81,9 @@ print <<"HTML";
     <a class="btn btn-slate"   href="$BASEURL/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
   </div>
 
-  <div class="container">
-    <div class="card">
-      <h3>Status: $status_line</h3>
-      $linking_note
-      <p class="small">Use Settings to configure OIDC and MQTT. “Fetch now” returns JSON in the browser.</p>
-    </div>
-  </div>
+  <h2>Status: $status_line</h2>
+  $linking_note
+  <p>Use Settings to configure OIDC and MQTT. “Fetch now” returns JSON in the browser.</p>
 </body>
 </html>
 HTML
