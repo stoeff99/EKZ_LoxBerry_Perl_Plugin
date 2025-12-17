@@ -81,7 +81,7 @@ print <<"HTML";
     <a class="btn btn-slate"   href="$BASEURL/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
   </div>
 
-  <h2>Status: $status_line</h2>
+  <h2 class="status-title">Status: $status_line</h2>
   $linking_note
   <p>Use Settings to configure OIDC and MQTT. “Fetch now” returns JSON in the browser.</p>
 </body>
