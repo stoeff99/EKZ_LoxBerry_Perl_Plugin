@@ -211,37 +211,59 @@ print <<"HTML";
 </html>
 HTML
 
-# Cron updater (unchanged)
+# Replace the whole update_cron_schedule sub with this simpler, hour-based version
 sub update_cron_schedule {
   my ($schedule) = @_;
+
   my $cron_file;
   my $cron_content;
 
+  # Run CGI directly with Perl to avoid any web auth/session
+  my $run_cmd = "/usr/bin/env perl \"$lbphtmlauthdir/run_rolling_fetch.cgi\" >/dev/null 2>&1";
+
   if ($schedule && $schedule eq '1') {
-    $cron_file = "$lbhomedir/system/cron/cron.daily/$lbpplugindir";
-    $cron_content  = "#!/bin/bash\n# Run at 18:05 daily\n";
-    $cron_content .= "if [ \$(date +\\%H:\\%M) = \"18:05\" ]; then\n";
-    $cron_content .= "  curl -s http://localhost/admin/plugins/$lbpplugindir/run_rolling_fetch.cgi >/dev/null 2>&1\n";
-    $cron_content .= "fi\n";
-  } elsif ($schedule && $schedule eq '2') {
+    # Once per day at 19:00
     $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
-    $cron_content  = "#!/bin/bash\n# Run at 18:05 and 06:05\n";
-    $cron_content .= "HOUR=\$(date +\\%H)\nMINUTE=\$(date +\\%M)\n";
-    $cron_content .= "if [[ \$MINUTE == \"05\" && (\$HOUR == \"18\" || \$HOUR == \"06\") ]]; then\n";
-    $cron_content .= "  curl -s http://localhost/admin/plugins/$lbpplugindir/run_rolling_fetch.cgi >/dev/null 2>&1\n";
-    $cron_content .= "fi\n";
-  } elsif ($schedule && $schedule eq '12') {
+    $cron_content = <<"BASH";
+#!/bin/bash
+HOUR=\$(date +\\%H)
+if [[ "\$HOUR" == "19" ]]; then
+  $run_cmd
+fi
+BASH
+  }
+  elsif ($schedule && $schedule eq '2') {
+    # Twice per day at 07:00 and 19:00
     $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
-    $cron_content  = "#!/bin/bash\n# Run every 2 hours\n";
-    $cron_content .= "HOUR=\$(date +\\%H)\n";
-    $cron_content .= "if (( \$HOUR % 2 == 0 )); then\n";
-    $cron_content .= "  curl -s http://localhost/admin/plugins/$lbpplugindir/run_rolling_fetch.cgi >/dev/null 2>&1\n";
-    $cron_content .= "fi\n";
-  } elsif ($schedule && $schedule eq '24') {
+    $cron_content = <<"BASH";
+#!/bin/bash
+HOUR=\$(date +\\%H)
+if [[ "\$HOUR" == "07" || "\$HOUR" == "19" ]]; then
+  $run_cmd
+fi
+BASH
+  }
+  elsif ($schedule && $schedule eq '12') {
+    # Every 2 hours on even hours: 00, 02, 04, ...
     $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
-    $cron_content  = "#!/bin/bash\n# Run every hour\n";
-    $cron_content .= "curl -s http://localhost/admin/plugins/$lbpplugindir/run_rolling_fetch.cgi >/dev/null 2>&1\n";
-  } else {
+    $cron_content = <<"BASH";
+#!/bin/bash
+HOUR=\$(date +\\%H)
+if (( \$HOUR % 2 == 0 )); then
+  $run_cmd
+fi
+BASH
+  }
+  elsif ($schedule && $schedule eq '24') {
+    # Every hour
+    $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
+    $cron_content = <<"BASH";
+#!/bin/bash
+$run_cmd
+BASH
+  }
+  else {
+    # Invalid/disabled: remove any existing wrappers
     my @cron_dirs = ("$lbhomedir/system/cron/cron.01min",
                      "$lbhomedir/system/cron/cron.03min",
                      "$lbhomedir/system/cron/cron.05min",
@@ -254,16 +276,21 @@ sub update_cron_schedule {
     return 0;
   }
 
-  my @dirs = ("$lbhomedir/system/cron/cron.01min",
-              "$lbhomedir/system/cron/cron.03min",
-              "$lbhomedir/system/cron/cron.05min",
-              "$lbhomedir/system/cron/cron.10min",
-              "$lbhomedir/system/cron/cron.15min",
-              "$lbhomedir/system/cron/cron.30min",
-              "$lbhomedir/system/cron/cron.hourly",
-              "$lbhomedir/system/cron/cron.daily");
-  foreach my $dir (@dirs) { unlink "$dir/$lbpplugindir" if -e "$dir/$lbpplugindir" }
+  # Clean up old locations (keep only the new one)
+  my @all_dirs = ("$lbhomedir/system/cron/cron.01min",
+                  "$lbhomedir/system/cron/cron.03min",
+                  "$lbhomedir/system/cron/cron.05min",
+                  "$lbhomedir/system/cron/cron.10min",
+                  "$lbhomedir/system/cron/cron.15min",
+                  "$lbhomedir/system/cron/cron.30min",
+                  "$lbhomedir/system/cron/cron.hourly",
+                  "$lbhomedir/system/cron/cron.daily");
+  foreach my $dir (@all_dirs) {
+    next if $cron_file =~ /\Q$dir\E/;
+    unlink "$dir/$lbpplugindir" if -e "$dir/$lbpplugindir";
+  }
 
+  # Write wrapper
   eval {
     open my $fh, '>', $cron_file or die "Cannot write $cron_file: $!";
     print $fh $cron_content;
