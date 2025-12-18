@@ -171,6 +171,32 @@ for my $hk (sort keys %hour_groups) {
   };
 }
 
+
+# Prepare payloads for MQTT
+my $pub_ts = $doc->{publication_timestamp} // '';
+my $intervals_msg = {
+  publication_timestamp => $pub_ts,
+  interval_count        => scalar(@intervals),
+  intervals             => \@intervals,
+};
+my $hourly_msg = {
+  publication_timestamp => $pub_ts,
+  hour_count            => scalar(@hourly),
+  hourly                => \@hourly,
+};
+
+my $json_intervals = JSON::PP->new->canonical(1)->encode($intervals_msg);
+my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
+
+# Determine topics (reuse existing raw/summary topics)
+my $topic_intervals = $cfg->{mqtt_topic_raw}       // 'ekz/ems/tariffs/intervals';
+my $topic_hourly    = $cfg->{mqtt_topic_summary}   // 'ekz/ems/tariffs/hourly';
+
+my $pub_intervals_ok = mqtt_publish($cfg, $topic_intervals, $json_intervals);
+my $pub_hourly_ok    = mqtt_publish($cfg, $topic_hourly,    $json_hourly);
+
+
+# Build HTTP response
 my $out = {
   source_file             => $src_path,
   publication_timestamp   => $doc->{publication_timestamp} // '',
