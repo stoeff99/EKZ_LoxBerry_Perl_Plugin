@@ -38,7 +38,7 @@ body {
 .app-header {
   display: flex;
   align-items: center;
-  justify-content: left;
+  justify-content: center;
   margin: 18px auto 0;
 }
 
@@ -57,7 +57,7 @@ body {
 
 /* Banner title size (EKZ Dynamic Price) */
 .app-header .title {
-  position: absolute;
+  position: center;
   left: 22px;
   bottom: 18px;
   font-size: 36px !important;   /* adjust this to change the page title size */
