@@ -91,7 +91,7 @@ print <<"HTML";
         <thead>
           <tr>
             <th scope="col">Hour (local)</th>
-            <th scope="col" class="cost">Avg total (CHF)</th>
+            <th scope="col" class="cost">Avg total (CHF/kWh)</th>
           </tr>
         </thead>
         <tbody id="next12h-body"></tbody>
