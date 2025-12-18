@@ -68,7 +68,6 @@ print <<"HTML";
 
   <h2 class="status-title">Status: $status_line</h2>
   $linking_note
-  <p>Use Settings to configure OIDC and MQTT. “Fetch now” returns JSON in the browser.</p>
 
 <style>
     /* Lightweight table styling for the costs panel */
@@ -78,6 +77,10 @@ print <<"HTML";
     .costs-table td.cost { text-align: right; font-variant-numeric: tabular-nums; }
     .muted { color: #9fb0c9; }
   </style>
+
+  <div class="card">
+      <p>Use Settings to configure OIDC and MQTT. “Fetch now” returns JSON in the browser.</p>
+    </div>
 
   <div class="container">
     <!-- New panel: Next 12 hours based on hourly averages (from compute_costs.cgi) -->
@@ -96,10 +99,6 @@ print <<"HTML";
         </thead>
         <tbody id="next12h-body"></tbody>
       </table>
-    </div>
-
-    <div class="card">
-      <p>Use Settings to configure OIDC and MQTT. “Fetch now” returns JSON in the browser.</p>
     </div>
   </div>
 
