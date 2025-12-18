@@ -7,7 +7,7 @@ use CGI;
 use JSON::PP;
 use File::Spec;
 use POSIX qw(strftime);
-use Time::Local;
+use Tie::IxHash;           # <-- preserve object key order
 use LoxBerry::System;
 use LoxBerry::Log;
 use FindBin;
@@ -28,104 +28,161 @@ my $log = LoxBerry::Log->new(
   nosession => 1,
 );
 
-LOGSTART("run_raw_fetch started");
+LOGSTART("run_rolling_fetch started");
 
-sub tz_offset_colon {
-  my $z = strftime('%z', localtime);   # +0100
+# -------- Normalization helpers --------
+sub _norm_unit_name {
+  my ($u) = @_;
+  return 'CHF_kWh' if defined $u && lc($u) eq 'chf_kwh';
+  return 'CHF_M'   if defined $u && lc($u) eq 'chf_m';
+  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]?kwh$/;
+  return 'CHF_M'   if defined $u && lc($u) =~ /^chf[_-]?m$/;
+  return $u // 'CHF_kWh';
+}
+
+sub _ordered_cost_array {
+  my ($arr) = @_;
+  $arr ||= [];
+  my %v;
+  for my $e (@$arr) {
+    next unless ref $e eq 'HASH';
+    my $unit = _norm_unit_name($e->{unit});
+    $v{$unit} = $e->{value} + 0 if exists $e->{value};
+  }
+  return [
+    { unit => 'CHF_M',   value => ($v{'CHF_M'}   // 0) + 0 },
+    { unit => 'CHF_kWh', value => ($v{'CHF_kWh'} // 0) + 0 },
+  ];
+}
+
+# Return a TIED ordered hashref with keys in the exact order we want
+sub _ordered_block {
+  my ($p) = @_;
+  tie my %o, 'Tie::IxHash';
+  %o = (
+    start_timestamp => $p->{start_timestamp},
+    end_timestamp   => $p->{end_timestamp},
+    electricity     => _ordered_cost_array($p->{electricity}),
+    grid            => _ordered_cost_array($p->{grid}),
+    integrated      => _ordered_cost_array($p->{integrated}),
+    regional_fees   => _ordered_cost_array($p->{regional_fees}),
+  );
+  return \%o;
+}
+
+sub _tz_offset_colon {
+  my $z = strftime('%z', localtime);   # e.g. +0100 or -0530
   $z =~ s/(\+|-)(\d{2})(\d{2})/$1$2:$3/;
   return $z;
 }
 
-# Build midnight->next-midnight local calendar window (NOT rolling)
-sub build_calendar_day_window {
-  my @lt = localtime();
-  my ($Y,$m,$d) = ($lt[5]+1900, $lt[4]+1, $lt[3]);
-  my $tz = tz_offset_colon();
+sub normalize_prices_doc {
+  my ($payload) = @_;
 
-  my $start_iso = sprintf('%04d-%02d-%02dT00:00:00%s', $Y, $m, $d, $tz);
+  my $rows = $payload->{prices};
+  $rows = $payload->{rows} if !defined $rows;
+  $rows ||= [];
 
-  # next day (let the system handle month/year rollover)
-  my $t = timelocal(0,0,0,$d,$m-1,$Y-1900) + 24*3600;
-  my @n = localtime($t);
-  my ($Y2,$m2,$d2) = ($n[5]+1900, $n[4]+1, $n[3]);
-  my $end_iso = sprintf('%04d-%02d-%02dT00:00:00%s', $Y2, $m2, $d2, $tz);
+  my @sorted = sort {
+    ($a->{start_timestamp} // '') cmp ($b->{start_timestamp} // '')
+  } grep { ref $_ eq 'HASH' && $_->{start_timestamp} } @$rows;
 
-  return ($start_iso, $end_iso);
+  my @out = map { _ordered_block($_) } @sorted;
+
+  my $pub = $payload->{publication_timestamp};
+  if (!defined $pub || $pub eq '') {
+    $pub = strftime('%Y-%m-%dT%H:%M:%S', localtime) . _tz_offset_colon();
+  }
+
+  # Top-level document with ordered keys too
+  tie my %doc, 'Tie::IxHash';
+  %doc = (
+    publication_timestamp => $pub,
+    prices                => \@out,
+  );
+  return \%doc;
 }
+
+sub write_json_file {
+  my ($path, $doc) = @_;
+  my $json = JSON::PP->new->pretty(1)->encode($doc);   # no canonical => preserve Tie::IxHash order
+  open my $fh, '>', $path or die "Cannot write $path: $!";
+  print $fh $json;
+  close $fh;
+  chmod 0640, $path;
+}
+# --------------------------------------
 
 my $ok = eval {
   my $cfg = load_cfg();
 
-  # Ensure linked
-  my ($link_status, $link_url, $link_err) = try_ensure_linked($cfg);
+  my ($link_status, $link_url) = try_ensure_linked($cfg);
   if ($link_status eq 'not_signed_in') {
-    print encode_json({ error => 'not_signed_in', message => 'Please sign in via the plugin UI.' });
+    print encode_json({ error => 'not_signed_in', message => 'User not signed in. Please sign in via the plugin UI.' });
     return 1;
   }
   if ($link_status eq 'link_required') {
     print encode_json({
       error => 'link_required',
-      message => 'EMS is not linked. Complete linking first.',
+      message => 'EMS is not linked to customer account. Redirect customer to linking flow.',
       linking_process_redirect_uri => $link_url,
     });
     return 1;
   }
   if ($link_status eq 'error') {
-    print encode_json({ error => 'link_check_failed', message => $link_err // 'Unknown link status error' });
+    my (undef, undef, $err) = try_ensure_linked($cfg);
+    print encode_json({ error => 'link_check_failed', message => $err // 'Unknown error checking link status' });
     return 1;
   }
 
-  # Get access token (may die)
+  my ($start_iso, $end_iso) = build_scheduled_window();
+
   my $access = ensure_access_token($cfg);
+  my ($payload, $source) = fetch_window($cfg, $access, $start_iso, $end_iso);
 
-  # Try to fetch RAW as provided by the host
-  my ($payload, $source);
-
-  # Path A: If common.pl exposes a raw fetcher, use it (no window params)
-  if (defined &fetch_raw) {
-    ($payload, $source) = fetch_raw($cfg, $access);
-  }
-  # Path B: If it exposes a daily/customer fetcher, try that
-  elsif (defined &fetch_customer_daily) {
-    ($payload, $source) = fetch_customer_daily($cfg, $access);
-  }
-  # Path C: Fallback to a plain calendar-day window (midnight -> midnight), not rolling
-  else {
-    my ($start_iso, $end_iso) = build_calendar_day_window();
-    if (defined &fetch_window) {
-      ($payload, $source) = fetch_window($cfg, $access, $start_iso, $end_iso);
-    } else {
-      die "No suitable fetch function found (need fetch_raw, fetch_customer_daily, or fetch_window)";
-    }
-  }
-
-  # If some fetchers return reversed tuple, swap
   if (!defined $payload || ref($payload) ne 'HASH') {
     if (defined $source && ref($source) eq 'HASH') {
       ($payload, $source) = ($source, $payload);
     }
   }
   unless (defined $payload && ref($payload) eq 'HASH') {
-    my $ptype = defined $payload ? ref($payload) || 'SCALAR' : 'UNDEF';
-    my $stype = defined $source  ? ref($source)  || 'SCALAR' : 'UNDEF';
-    my $msg = "Invalid fetch response: payload_type=$ptype, source_type=$stype";
+    my $msg = "Unexpected response from fetch_window";
+    LOGERR($msg);
     print encode_json({ error => 'invalid_fetch_response', message => $msg });
     return 1;
   }
 
-  # Save EXACTLY what we received (pretty for readability; no sorting/normalization)
-  my $out_file = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
-  my $json = JSON::PP->new->pretty(1)->encode($payload);
-  open my $fh, '>', $out_file or die "Cannot write $out_file: $!";
-  print $fh $json;
-  close $fh;
-  chmod 0640, $out_file;
+  # Normalize for file + HTTP response
+  my $norm = normalize_prices_doc($payload);
 
-  # Publish to MQTT using the same raw payload
-  eval { publish_tariffs_to_mqtt($cfg, $payload, $source, undef, undef); 1 };
+  # Write normalized latest file
+  my $latest = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
+  write_json_file($latest, $norm);
 
-  # Return the RAW payload to the browser
-  print $json;
+  # Optional: calendar-day file based on first interval
+  if (@{ $norm->{prices} // [] }) {
+    my $day = substr($norm->{prices}[0]{start_timestamp} // '', 0, 10);
+    if ($day && $day =~ /^\d{4}-\d{2}-\d{2}$/) {
+      my $byday = File::Spec->catfile($lbpdatadir, "tariffs_${day}.json");
+      write_json_file($byday, $norm);
+    }
+  }
+
+  # Publish using raw payload (leave as-is). If you need normalized, call publish with $norm.
+  eval { publish_tariffs_to_mqtt($cfg, $payload, $source, $start_iso, $end_iso); 1 };
+
+  # Return normalized data (rows alias kept)
+  my $prices = $norm->{prices} // [];
+  my $out = {
+    from                  => $start_iso,
+    to                    => $end_iso,
+    source                => $source // 'unknown',
+    publication_timestamp => $norm->{publication_timestamp},
+    prices                => $prices,
+    rows                  => $prices,
+    interval_count        => scalar(@$prices),
+  };
+  print JSON::PP->new->pretty(1)->encode($out);  # preserve Tie::IxHash order
   return 1;
 };
 
@@ -134,7 +191,7 @@ if (!$ok) {
   eval {
     my $logfile = File::Spec->catfile($lbpdatadir, 'fetch.log');
     if (open my $fh, '>>', $logfile) {
-      print $fh scalar(localtime) . " - run_raw_fetch died: $err\n";
+      print $fh scalar(localtime) . " - run_rolling_fetch CGI died: $err\n";
       close $fh;
     }
     1;
