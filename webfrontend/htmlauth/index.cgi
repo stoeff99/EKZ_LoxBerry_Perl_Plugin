@@ -11,17 +11,23 @@ require "$FindBin::Bin/common.pl";
 our ($lbpurl, $lbpdatadir, $lbptemplatedir);
 
 # Base URLs
-my $BASEURL    = $lbpurl || do { (my $p = $ENV{SCRIPT_NAME}//'') =~ s{/[^/]+$}{}r || '.' };
+my $BASEURL    = $lbpurl;
+if (!$BASEURL) {
+  my $path = $ENV{SCRIPT_NAME} // '';
+  $path =~ s{/[^/]+$}{};
+  $BASEURL = $path || '.';
+}
 my $ASSET_BASE = "$BASEURL/assets";
 my $ICON_BASE  = "$BASEURL/Icons";
 
-my $q = CGI->new;
-print $q->header('text/html; charset=utf-8');
+my $q   = CGI->new;
+my $cfg = load_cfg();
 
-# Determine status line from runtime (non-fatal if helpers unavailable)
-my $cfg = eval { load_cfg() } // {};
-my ($link_status, $link_url, $err) = eval { try_ensure_linked($cfg) } // ('unknown','',undef);
-my $signed_in = eval { has_tokens($cfg) } // 0;
+# Sign-in / link status
+my $signed_in = has_tokens($cfg);
+my ($link_status, $link_url, $err) = try_ensure_linked($cfg) if $signed_in;
+
+print $q->header('text/html; charset=utf-8');
 
 my $status_line = !$signed_in                           ? 'Not signed in'
                  : (($link_status // '') eq 'linked')        ? 'Linked to myEKZ'
@@ -45,14 +51,6 @@ print <<"HTML";
   <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
   <link rel="stylesheet" href="$BASEURL/style.css">
   <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251217">
-  <style>
-    /* Lightweight table styling for the costs panel */
-    .costs-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
-    .costs-table th, .costs-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
-    .costs-table th { text-align: left; color: #9fb0c9; font-weight: 700; }
-    .costs-table td.cost { text-align: right; font-variant-numeric: tabular-nums; }
-    .muted { color: #9fb0c9; }
-  </style>
 </head>
 <body id="ekz-plugin" class="plugincontent">
   <div class="app-header">
@@ -70,6 +68,16 @@ print <<"HTML";
 
   <h2 class="status-title">Status: $status_line</h2>
   $linking_note
+  <p>Use Settings to configure OIDC and MQTT. “Fetch now” returns JSON in the browser.</p>
+
+<style>
+    /* Lightweight table styling for the costs panel */
+    .costs-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    .costs-table th, .costs-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
+    .costs-table th { text-align: left; color: #9fb0c9; font-weight: 700; }
+    .costs-table td.cost { text-align: right; font-variant-numeric: tabular-nums; }
+    .muted { color: #9fb0c9; }
+  </style>
 
   <div class="container">
     <!-- New panel: Next 12 hours based on hourly averages (from compute_costs.cgi) -->
@@ -154,3 +162,5 @@ print <<"HTML";
 </body>
 </html>
 HTML
+
+exit 0;
