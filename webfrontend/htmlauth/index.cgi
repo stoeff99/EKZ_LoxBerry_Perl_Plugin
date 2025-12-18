@@ -8,26 +8,20 @@ use FindBin;
 require "$FindBin::Bin/common.pl";
 
 # SDK globals
-our ($lbpdatadir, $lbpurl, $lbptemplatedir);
+our ($lbpurl, $lbpdatadir, $lbptemplatedir);
 
 # Base URLs
-my $BASEURL    = $lbpurl;
-if (!$BASEURL) {
-  my $path = $ENV{SCRIPT_NAME} // '';
-  $path =~ s{/[^/]+$}{};
-  $BASEURL = $path || '.';
-}
+my $BASEURL    = $lbpurl || do { (my $p = $ENV{SCRIPT_NAME}//'') =~ s{/[^/]+$}{}r || '.' };
 my $ASSET_BASE = "$BASEURL/assets";
 my $ICON_BASE  = "$BASEURL/Icons";
 
-my $q   = CGI->new;
-my $cfg = load_cfg();
-
-# Sign-in / link status
-my $signed_in = has_tokens($cfg);
-my ($link_status, $link_url, $err) = try_ensure_linked($cfg) if $signed_in;
-
+my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
+
+# Determine status line from runtime (non-fatal if helpers unavailable)
+my $cfg = eval { load_cfg() } // {};
+my ($link_status, $link_url, $err) = eval { try_ensure_linked($cfg) } // ('unknown','',undef);
+my $signed_in = eval { has_tokens($cfg) } // 0;
 
 my $status_line = !$signed_in                           ? 'Not signed in'
                  : (($link_status // '') eq 'linked')        ? 'Linked to myEKZ'
@@ -48,9 +42,17 @@ print <<"HTML";
   <meta charset="utf-8">
   <title>EKZ Dynamic Price</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <!-- Keep original plugin stylesheet, then our enhanced styles with cache-bust -->
+  <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
   <link rel="stylesheet" href="$BASEURL/style.css">
   <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251217">
+  <style>
+    /* Lightweight table styling for the costs panel */
+    .costs-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    .costs-table th, .costs-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
+    .costs-table th { text-align: left; color: #9fb0c9; font-weight: 700; }
+    .costs-table td.cost { text-align: right; font-variant-numeric: tabular-nums; }
+    .muted { color: #9fb0c9; }
+  </style>
 </head>
 <body id="ekz-plugin" class="plugincontent">
   <div class="app-header">
@@ -68,9 +70,87 @@ print <<"HTML";
 
   <h2 class="status-title">Status: $status_line</h2>
   $linking_note
-  <p>Use Settings to configure OIDC and MQTT. “Fetch now” returns JSON in the browser.</p>
+
+  <div class="container">
+    <!-- New panel: Next 12 hours based on hourly averages (from compute_costs.cgi) -->
+    <div class="card" id="next12h-card">
+      <div style="display:flex;align-items:baseline;gap:10px;">
+        <h3 style="margin:0;">Next 12 hours</h3>
+        <span class="small muted">Hourly average = mean of four 15‑min intervals</span>
+      </div>
+      <div id="next12h-note" class="small muted" style="margin-top:6px;">Reading computed costs…</div>
+      <table class="costs-table" id="next12h-table" style="display:none;">
+        <thead>
+          <tr>
+            <th scope="col">Hour (local)</th>
+            <th scope="col" class="cost">Avg total (CHF)</th>
+          </tr>
+        </thead>
+        <tbody id="next12h-body"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <p>Use Settings to configure OIDC and MQTT. “Fetch now” returns JSON in the browser.</p>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const note   = document.getElementById('next12h-note');
+      const table  = document.getElementById('next12h-table');
+      const tbody  = document.getElementById('next12h-body');
+
+      function fmtTime(iso) {
+        const d = new Date(iso);
+        if (isNaN(d)) return iso;
+        return d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', weekday: 'short', month: 'short', day: '2-digit' });
+      }
+
+      function fmtCHF(x) {
+        if (typeof x !== 'number') x = Number(x);
+        if (!isFinite(x)) return String(x);
+        // Show up to 4 decimals to preserve precision of tariff values
+        return x.toFixed(4);
+      }
+
+      fetch('compute_costs.cgi', { cache: 'no-store' })
+        .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+        .then(data => {
+          const now = Date.now();
+          const items = (data && Array.isArray(data.hourly) ? data.hourly : [])
+            .map(h => Object.assign({ _t: Date.parse(h.hour_start) }, h))
+            .filter(h => !isNaN(h._t) && h._t >= now)
+            .sort((a,b) => a._t - b._t)
+            .slice(0, 12);
+
+          if (items.length === 0) {
+            note.textContent = 'No hourly data available. Click “Fetch now” first.';
+            return;
+          }
+
+          // Build rows
+          tbody.innerHTML = '';
+          for (const h of items) {
+            const tr = document.createElement('tr');
+            const tdTime = document.createElement('td');
+            const tdCost = document.createElement('td');
+            tdTime.textContent = fmtTime(h.hour_start);
+            tdCost.textContent = fmtCHF(h.avg_total_chf);
+            tdCost.className = 'cost';
+            tr.appendChild(tdTime);
+            tr.appendChild(tdCost);
+            tbody.appendChild(tr);
+          }
+
+          note.style.display = 'none';
+          table.style.display = '';
+        })
+        .catch(err => {
+          note.textContent = 'Failed to load computed costs: ' + err.message;
+        });
+    })();
+  </script>
 </body>
 </html>
 HTML
-
-exit 0;
