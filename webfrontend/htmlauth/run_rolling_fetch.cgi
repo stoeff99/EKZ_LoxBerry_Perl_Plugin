@@ -7,6 +7,7 @@ use CGI;
 use JSON::PP;
 use File::Spec;
 use POSIX qw(strftime);
+use Tie::IxHash;           # <-- preserve object key order
 use LoxBerry::System;
 use LoxBerry::Log;
 use FindBin;
@@ -54,16 +55,19 @@ sub _ordered_cost_array {
   ];
 }
 
-sub _norm_one_block {
+# Return a TIED ordered hashref with keys in the exact order we want
+sub _ordered_block {
   my ($p) = @_;
-  return {
+  tie my %o, 'Tie::IxHash';
+  %o = (
     start_timestamp => $p->{start_timestamp},
     end_timestamp   => $p->{end_timestamp},
     electricity     => _ordered_cost_array($p->{electricity}),
     grid            => _ordered_cost_array($p->{grid}),
     integrated      => _ordered_cost_array($p->{integrated}),
     regional_fees   => _ordered_cost_array($p->{regional_fees}),
-  };
+  );
+  return \%o;
 }
 
 sub _tz_offset_colon {
@@ -83,22 +87,25 @@ sub normalize_prices_doc {
     ($a->{start_timestamp} // '') cmp ($b->{start_timestamp} // '')
   } grep { ref $_ eq 'HASH' && $_->{start_timestamp} } @$rows;
 
-  my @out = map { _norm_one_block($_) } @sorted;
+  my @out = map { _ordered_block($_) } @sorted;
 
   my $pub = $payload->{publication_timestamp};
   if (!defined $pub || $pub eq '') {
     $pub = strftime('%Y-%m-%dT%H:%M:%S', localtime) . _tz_offset_colon();
   }
 
-  return {
+  # Top-level document with ordered keys too
+  tie my %doc, 'Tie::IxHash';
+  %doc = (
     publication_timestamp => $pub,
     prices                => \@out,
-  };
+  );
+  return \%doc;
 }
 
 sub write_json_file {
   my ($path, $doc) = @_;
-  my $json = JSON::PP->new->canonical(1)->pretty(1)->encode($doc);
+  my $json = JSON::PP->new->pretty(1)->encode($doc);   # no canonical => preserve Tie::IxHash order
   open my $fh, '>', $path or die "Cannot write $path: $!";
   print $fh $json;
   close $fh;
@@ -133,16 +140,13 @@ my $ok = eval {
   my $access = ensure_access_token($cfg);
   my ($payload, $source) = fetch_window($cfg, $access, $start_iso, $end_iso);
 
-  # Defensive swap if fetch_window returns reversed values
   if (!defined $payload || ref($payload) ne 'HASH') {
     if (defined $source && ref($source) eq 'HASH') {
       ($payload, $source) = ($source, $payload);
     }
   }
   unless (defined $payload && ref($payload) eq 'HASH') {
-    my $ptype = defined $payload ? ref($payload) || 'SCALAR' : 'UNDEF';
-    my $stype = defined $source  ? ref($source)  || 'SCALAR' : 'UNDEF';
-    my $msg = "Unexpected response from fetch_window: payload_type=$ptype, source_type=$stype";
+    my $msg = "Unexpected response from fetch_window";
     LOGERR($msg);
     print encode_json({ error => 'invalid_fetch_response', message => $msg });
     return 1;
@@ -164,21 +168,21 @@ my $ok = eval {
     }
   }
 
-  # Publish (kept as-is; if you need normalized for MQTT, we can switch this too)
+  # Publish using raw payload (leave as-is). If you need normalized, call publish with $norm.
   eval { publish_tariffs_to_mqtt($cfg, $payload, $source, $start_iso, $end_iso); 1 };
 
-  # Return normalized data to the browser as well
+  # Return normalized data (rows alias kept)
   my $prices = $norm->{prices} // [];
   my $out = {
-    from                    => $start_iso,
-    to                      => $end_iso,
-    source                  => $source // 'unknown',
-    publication_timestamp   => $norm->{publication_timestamp},
-    prices                  => $prices,              # new, normalized field
-    rows                    => $prices,              # backward-compatible alias
-    interval_count          => scalar(@$prices),
+    from                  => $start_iso,
+    to                    => $end_iso,
+    source                => $source // 'unknown',
+    publication_timestamp => $norm->{publication_timestamp},
+    prices                => $prices,
+    rows                  => $prices,
+    interval_count        => scalar(@$prices),
   };
-  print JSON::PP->new->canonical(1)->encode($out);
+  print JSON::PP->new->pretty(1)->encode($out);  # preserve Tie::IxHash order
   return 1;
 };
 
