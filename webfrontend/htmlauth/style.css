@@ -222,5 +222,6 @@ button:active { transform: translateY(1px); }
 #ekz-plugin .status-title {
   font-size: 28px !important;   /* set your preferred size */
   font-weight: 800;
+  position: center;
   margin: 16px 0 10px;
 }
