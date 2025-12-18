@@ -206,23 +206,23 @@ sub update_cron_schedule {
   my $run_cmd = "/usr/bin/env perl \"$lbphtmlauthdir/run_rolling_fetch.cgi\" >/dev/null 2>&1";
 
   if ($schedule && $schedule eq '1') {
-    # Once per day at 19:00
+    # Once per day at 18:00
     $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
     $cron_content = <<"BASH";
 #!/bin/bash
 HOUR=\$(date +\\%H)
-if [[ "\$HOUR" == "19" ]]; then
+if [[ "\$HOUR" == "18" ]]; then
   $run_cmd
 fi
 BASH
   }
   elsif ($schedule && $schedule eq '2') {
-    # Twice per day at 07:00 and 19:00
+    # Twice per day at 06:00 and 18:00
     $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
     $cron_content = <<"BASH";
 #!/bin/bash
 HOUR=\$(date +\\%H)
-if [[ "\$HOUR" == "07" || "\$HOUR" == "19" ]]; then
+if [[ "\$HOUR" == "06" || "\$HOUR" == "18" ]]; then
   $run_cmd
 fi
 BASH
