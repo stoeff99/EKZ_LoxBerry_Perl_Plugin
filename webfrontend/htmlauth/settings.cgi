@@ -164,8 +164,8 @@ print <<"HTML";
           <legend>Scheduling</legend>
           <label>Fetch frequency</label>
           <select name="fetch_schedule">
-            <option value="1"  @{[ ($cfg->{fetch_schedule}//'') eq '1'  ? 'selected' : '' ]}>1x per day (at 19:00)</option>
-            <option value="2"  @{[ ($cfg->{fetch_schedule}//'') eq '2'  ? 'selected' : '' ]}>2x per day (at 07:00 and 19:00)</option>
+            <option value="1"  @{[ ($cfg->{fetch_schedule}//'') eq '1'  ? 'selected' : '' ]}>1x per day (at 18:00)</option>
+            <option value="2"  @{[ ($cfg->{fetch_schedule}//'') eq '2'  ? 'selected' : '' ]}>2x per day (at 06:00 and 18:00)</option>
             <option value="12" @{[ ($cfg->{fetch_schedule}//'') eq '12' ? 'selected' : '' ]}>12x per day (every 2 hours, even hours)</option>
             <option value="24" @{[ ($cfg->{fetch_schedule}//'') eq '24' ? 'selected' : '' ]}>24x per day (every hour)</option>
           </select>
