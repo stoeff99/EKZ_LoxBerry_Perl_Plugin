@@ -37,8 +37,8 @@ body {
 /* Banner */
 .app-header {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: left;
+  justify-content: left;
   margin: 18px auto 0;
 }
 
@@ -49,7 +49,7 @@ body {
   border-radius: var(--radius);
   background:
     linear-gradient(90deg, rgba(0,0,0,.35), rgba(0,0,0,.15)),
-    url('../Icons/banner.jpg') center/cover no-repeat;
+    url('../Icons/banner.jpg') left/cover no-repeat;
   box-shadow: var(--shadow);
   overflow: hidden;
   position: relative;
@@ -57,7 +57,7 @@ body {
 
 /* Banner title size (EKZ Dynamic Price) */
 .app-header .title {
-  position: center;
+  position: left;
   left: 22px;
   bottom: 18px;
   font-size: 36px !important;   /* adjust this to change the page title size */
@@ -79,7 +79,7 @@ body {
 a.btn {
   text-decoration: none;
   display: inline-flex;
-  align-items: center;
+  align-items: left;
   gap: 12px;
   padding: 14px 20px;
   border-radius: 16px;
@@ -222,6 +222,6 @@ button:active { transform: translateY(1px); }
 #ekz-plugin .status-title {
   font-size: 28px !important;   /* set your preferred size */
   font-weight: 800;
-  position: center;
+  position: left;
   margin: 16px 0 10px;
 }
