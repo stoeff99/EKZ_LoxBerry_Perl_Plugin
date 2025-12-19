@@ -2,18 +2,13 @@
 use strict;
 use warnings;
 
-# Render Perl errors to the browser (handy while developing)
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
-
 use CGI;
-use FindBin;
 
 my $q = CGI->new;
-
-# Always send a header first (prevents “premature end of script headers”)
 print $q->header('text/html; charset=utf-8');
 
-# Derive a base URL from the request path (no LoxBerry globals needed)
+# Derive base URL from this script path
 my $BASEURL = do {
   my $p = $ENV{SCRIPT_NAME} // '';
   $p =~ s{/[^/]+$}{};
@@ -71,7 +66,7 @@ print <<"HTML";
         </select>
         <span class="muted small">Bars colored by relative level (very low → very high)</span>
       </div>
-      <div id="status" class="status muted">Press “Fetch now and draw”. This fetches, computes and renders the chart.</div>
+      <div id="status" class="status muted">Press “Fetch now and draw”. This fetches, publishes (via backend), computes for UI, then renders.</div>
       <div id="chartwrap">
         <canvas id="priceChart" aria-label="Price chart" role="img"></canvas>
       </div>
@@ -155,23 +150,15 @@ print <<"HTML";
           responsive: true,
           maintainAspectRatio: false,
           scales: {
-            x: {
-              ticks: { color: '#cbd5e1', maxRotation: 0, autoSkip: true },
-              grid: { color: 'rgba(148,163,184,0.15)' }
-            },
-            y: {
-              ticks: { color: '#cbd5e1' },
-              grid: { color: 'rgba(148,163,184,0.15)' },
-              title: { display: true, text: 'CHF/kWh', color: '#cbd5e1' }
-            }
+            x: { ticks: { color: '#cbd5e1', maxRotation: 0, autoSkip: true },
+                 grid: { color: 'rgba(148,163,184,0.15)' } },
+            y: { ticks: { color: '#cbd5e1' },
+                 grid: { color: 'rgba(148,163,184,0.15)' },
+                 title: { display: true, text: 'CHF/kWh', color: '#cbd5e1' } }
           },
           plugins: {
             legend: { display: false },
-            tooltip: {
-              callbacks: {
-                label: (ctx) => ` Total: ${Number(ctx.raw).toFixed(4)} CHF/kWh`
-              }
-            }
+            tooltip: { callbacks: { label: (ctx) => ` Total: ${Number(ctx.raw).toFixed(4)} CHF/kWh` } }
           }
         }
       });
@@ -199,25 +186,22 @@ print <<"HTML";
     }
 
     async function fetchBackendAndCompute() {
-      setStatus('Fetching…');
-      // 1) Backend fetch (saves tariffs_latest.json and auto-publishes via compute_costs)
+      setStatus('Fetching (backend)…');
+      // 1) Backend fetch which also publishes MQTT via compute_costs on the server side
       const r1 = await fetch('run_rolling_fetch.cgi', { cache: 'no-store' });
       if (!r1.ok) throw new Error('Fetch backend failed: HTTP ' + r1.status);
 
-      // 2) Compute costs for UI (re-reads latest file)
-      setStatus('Computing costs…');
+      // 2) Compute for UI only (no MQTT publish)
+      setStatus('Computing costs for UI…');
       const r2 = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
       if (!r2.ok) throw new Error('compute_costs failed: HTTP ' + r2.status);
-      const report = await r2.json();
-      lastReport = report;
+      lastReport = await r2.json();
 
-      // 3) Draw
-      setStatus('Rendering chart…');
+      setStatus('Rendering…');
       draw(document.getElementById('view').value);
 
-      // 4) Status
-      const ic = (report && report.interval_count_output) || 0;
-      const hc = (report && report.hour_count_output) || 0;
+      const ic = (lastReport && lastReport.interval_count_output) || 0;
+      const hc = (lastReport && lastReport.hour_count_output) || 0;
       setStatus(\`Ready. Intervals: \${ic}, hours: \${hc}.\`);
     }
 
