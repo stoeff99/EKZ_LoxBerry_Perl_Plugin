@@ -17,6 +17,7 @@ my $BASEURL = do {
 my $ASSET_BASE = "$BASEURL/assets";
 my $ICON_BASE  = "$BASEURL/Icons";
 
+# HTML up to the <script> tag (variables should interpolate here)
 print <<"HTML";
 <!doctype html>
 <html>
@@ -80,6 +81,10 @@ print <<"HTML";
   </div>
 
   <script>
+HTML
+
+# JavaScript printed with a SINGLE-QUOTED heredoc to avoid Perl interpolation of ${...}
+print <<'JS';
   (() => {
     const $ = (sel) => document.querySelector(sel);
     const status = $('#status');
@@ -187,7 +192,7 @@ print <<"HTML";
 
     async function fetchBackendAndCompute() {
       setStatus('Fetching (backend)…');
-      // 1) Backend fetch which also publishes MQTT via compute_costs on the server side
+      // 1) Backend fetch
       const r1 = await fetch('run_rolling_fetch.cgi', { cache: 'no-store' });
       if (!r1.ok) throw new Error('Fetch backend failed: HTTP ' + r1.status);
 
@@ -202,7 +207,7 @@ print <<"HTML";
 
       const ic = (lastReport && lastReport.interval_count_output) || 0;
       const hc = (lastReport && lastReport.hour_count_output) || 0;
-      setStatus(\`Ready. Intervals: \${ic}, hours: \${hc}.\`);
+      setStatus(`Ready. Intervals: ${ic}, hours: ${hc}.`);
     }
 
     document.getElementById('btnFetch').addEventListener('click', async (e) => {
@@ -222,6 +227,10 @@ print <<"HTML";
       draw(e.target.value);
     });
   })();
+JS
+
+# Close HTML (double-quoted heredoc is fine again)
+print <<"HTML";
   </script>
 </body>
 </html>
