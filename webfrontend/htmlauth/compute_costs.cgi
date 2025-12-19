@@ -21,19 +21,17 @@ print $q->header('application/json; charset=utf-8');
 sub read_latest_json {
   my $path = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
   unless (-f $path) {
-    print JSON::PP->new->encode({ error => "not_found", message => "No tariffs_latest.json in $lbpdatadir" });
-    exit 0;
+    return ($path, undef, { error => "not_found", message => "No tariffs_latest.json in $lbpdatadir" });
   }
-  open my $fh, '<', $path or die "Cannot open $path: $!";
+  open my $fh, '<', $path or return ($path, undef, { error => "open_failed", message => "Cannot open $path: $!" });
   local $/ = undef;
   my $raw = <$fh>;
   close $fh;
   my $doc = eval { decode_json($raw) };
   if (!$doc) {
-    print JSON::PP->new->encode({ error => "invalid_json", message => "Could not parse tariffs_latest.json" });
-    exit 0;
+    return ($path, undef, { error => "invalid_json", message => "Could not parse tariffs_latest.json" });
   }
-  return ($path, $doc);
+  return ($path, $doc, undef);
 }
 
 sub get_unit_value {
@@ -55,19 +53,16 @@ sub days_in_month {
   my ($y, $m) = @_; # y=YYYY, m=1..12
   return 31 if $m =~ /^(1|3|5|7|8|10|12)$/;
   return 30 if $m =~ /^(4|6|9|11)$/;
-  # February
   my $leap = ($y % 400 == 0) || ($y % 4 == 0 && $y % 100 != 0);
   return $leap ? 29 : 28;
 }
 
-# Parse ISO8601 like 2025-12-18T18:15:00+01:00 (return YYYY,MM,DD,HH)
 sub parse_ymdh {
   my ($iso) = @_;
   my ($Y,$m,$d,$H) = $iso =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2})/;
   return ($Y+0,$m+0,$d+0,$H+0);
 }
 
-# Build hour start string "YYYY-MM-DDTHH:00:00+ZZ:zz" using offset from input timestamp
 sub hour_start_from {
   my ($iso) = @_;
   my ($date,$time,$off) = $iso =~ /^([^T]+)T([^+\-Z]+)([+\-]\d{2}:\d{2}|Z)?$/;
@@ -76,9 +71,6 @@ sub hour_start_from {
   return sprintf('%04d-%02d-%02dT%02d:00:00%s', $Y,$M,$D,$h,$off);
 }
 
-# Choose strategy to avoid double-counting "integrated":
-# - Prefer electricity + grid + regional_fees (CHF_kWh)
-# - If electricity/grid missing, fall back to integrated (+ regional_fees)
 sub kwh_total_for_block {
   my ($b) = @_;
   my $e_kwh = get_unit_value($b->{electricity},    'CHF_kWh');
@@ -92,9 +84,6 @@ sub kwh_total_for_block {
   }
 }
 
-# Monthly CHF_M total (avoid double-counting):
-# - Prefer integrated CHF_M + regional_fees CHF_M
-# - Else sum electricity CHF_M + grid CHF_M + regional_fees CHF_M
 sub monthly_M_total_for_block {
   my ($b) = @_;
   my $i_m = get_unit_value($b->{integrated},     'CHF_M');
@@ -108,16 +97,44 @@ sub monthly_M_total_for_block {
   }
 }
 
+# MQTT publish with mosquitto_pub fallback
+sub mqtt_publish {
+  my ($cfg, $topic, $payload_json) = @_;
+  return 0 unless $cfg->{mqtt_enabled};
+
+  my $host = $cfg->{mqtt_host} // 'localhost';
+  my $port = $cfg->{mqtt_port} // 1883;
+  my $user = $cfg->{mqtt_username} // '';
+  my $pass = $cfg->{mqtt_password} // '';
+
+  my $tmp = File::Spec->catfile($lbpdatadir, 'mqtt_payload.tmp.json');
+  open my $tf, '>', $tmp or return 0;
+  print $tf $payload_json;
+  close $tf;
+
+  my @cmd = ('mosquitto_pub', '-h', $host, '-p', $port, '-t', $topic, '-f', $tmp, '-r');
+  if (defined $user && $user ne '') { push @cmd, ('-u', $user); }
+  if (defined $pass && $pass ne '') { push @cmd, ('-P', $pass); }
+
+  my $rc = system(@cmd);
+  unlink $tmp;
+  return $rc == 0 ? 1 : 0;
+}
+
 # ---- main ----
 
-my ($src_path, $doc) = read_latest_json();
+my $cfg = eval { load_cfg() } // {};
 
-# Accept either {prices=>[]} or {rows=>[]}
+my ($src_path, $doc, $err) = read_latest_json();
+if ($err) {
+  print JSON::PP->new->encode($err);
+  exit 0;
+}
+
 my $rows = $doc->{prices};
 $rows = $doc->{rows} if !defined $rows;
 $rows ||= [];
 
-# Sort by start ascending for stable output
 my @sorted = sort {
   ($a->{start_timestamp} // '') cmp ($b->{start_timestamp} // '')
 } grep { ref $_ eq 'HASH' && $_->{start_timestamp} } @$rows;
@@ -132,24 +149,23 @@ for my $b (@sorted) {
   my ($Y,$M) = (parse_ymdh($start))[0,1];
   my $hours_in_month = days_in_month($Y,$M) * 24;
 
-  my $kwh_total      = kwh_total_for_block($b);              # 1) variable per kWh (CHF_kWh)
-  my $monthly_m      = monthly_M_total_for_block($b);        # CHF per month
-  my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;  # 2) CHF_M per hour for this month
-  my $sum_total      = $kwh_total + $fixed_per_hour;         # 3) sum
+  my $kwh_total      = kwh_total_for_block($b);
+  my $monthly_m      = monthly_M_total_for_block($b);
+  my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
+  my $sum_total      = $kwh_total + $fixed_per_hour;
 
   my $hour_key = hour_start_from($start);
 
   my $row = {
     start_timestamp  => $start,
     end_timestamp    => $end,
-    chf_per_kwh_sum  => $kwh_total,       # 1)
-    chf_m_per_hour   => $fixed_per_hour,  # 2)
-    total_chf        => $sum_total,       # 3)
-    month_hours_used => $hours_in_month,  # e.g., 744 in Dec
+    chf_per_kwh_sum  => $kwh_total,
+    chf_m_per_hour   => $fixed_per_hour,
+    total_chf        => $sum_total,
+    month_hours_used => $hours_in_month,
   };
   push @intervals, $row;
 
-  # Group for hourly averages
   $hour_groups{$hour_key} ||= { n => 0, kwh_sum => 0, fixed_sum => 0, total_sum => 0 };
   $hour_groups{$hour_key}{n}         += 1;
   $hour_groups{$hour_key}{kwh_sum}   += $kwh_total;
@@ -157,7 +173,6 @@ for my $b (@sorted) {
   $hour_groups{$hour_key}{total_sum} += $sum_total;
 }
 
-# Build hourly averages (mean of the 4 intervals in each hour)
 my @hourly;
 for my $hk (sort keys %hour_groups) {
   my $g = $hour_groups{$hk};
@@ -166,14 +181,13 @@ for my $hk (sort keys %hour_groups) {
     hour_start          => $hk,
     avg_total_chf       => $g->{total_sum} / $n,
     avg_chf_per_kwh_sum => $g->{kwh_sum}   / $n,
-    avg_chf_m_per_hour  => $g->{fixed_sum} / $n,  # usually equal across the four intervals
+    avg_chf_m_per_hour  => $g->{fixed_sum} / $n,
     intervals_count     => $n,
   };
 }
 
-
-# Prepare payloads for MQTT
 my $pub_ts = $doc->{publication_timestamp} // '';
+
 my $intervals_msg = {
   publication_timestamp => $pub_ts,
   interval_count        => scalar(@intervals),
@@ -188,28 +202,32 @@ my $hourly_msg = {
 my $json_intervals = JSON::PP->new->canonical(1)->encode($intervals_msg);
 my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
 
-# Determine topics (reuse existing raw/summary topics)
-my $topic_intervals = $cfg->{mqtt_topic_raw}       // 'ekz/ems/tariffs/intervals';
-my $topic_hourly    = $cfg->{mqtt_topic_summary}   // 'ekz/ems/tariffs/hourly';
+# FIX: use dedicated topics, with backward-compatible fallback
+my $topic_intervals = $cfg->{mqtt_topic_intervals}
+                   // $cfg->{mqtt_topic_raw}
+                   // 'ekz/ems/tariffs/intervals';
+my $topic_hourly    = $cfg->{mqtt_topic_hourly}
+                   // $cfg->{mqtt_topic_summary}
+                   // 'ekz/ems/tariffs/hourly';
 
 my $pub_intervals_ok = mqtt_publish($cfg, $topic_intervals, $json_intervals);
 my $pub_hourly_ok    = mqtt_publish($cfg, $topic_hourly,    $json_hourly);
 
-
-# Build HTTP response
 my $out = {
   source_file             => $src_path,
-  publication_timestamp   => $doc->{publication_timestamp} // '',
+  publication_timestamp   => $pub_ts,
   interval_count_input    => scalar(@sorted),
   interval_count_output   => scalar(@intervals),
+  hour_count_output       => scalar(@hourly),
   intervals               => \@intervals,
   hourly                  => \@hourly,
-  notes => [
-    "chf_per_kwh_sum is the sum of electricity+grid+regional_fees CHF_kWh in each 15-min interval (integrated ignored to avoid double counting).",
-    "chf_m_per_hour is the monthly fixed CHF_M divided by the number of hours in the interval's month (e.g., 31*24=744 for December).",
-    "total_chf = chf_per_kwh_sum + chf_m_per_hour.",
-    "Hourly averages are the mean of the four 15-min intervals within each hour.",
-  ],
+  mqtt => {
+    enabled               => !!($cfg->{mqtt_enabled}),
+    intervals_topic       => $topic_intervals,
+    hourly_topic          => $topic_hourly,
+    publish_intervals_ok  => $pub_intervals_ok ? JSON::PP::true : JSON::PP::false,
+    publish_hourly_ok     => $pub_hourly_ok    ? JSON::PP::true : JSON::PP::false,
+  },
 };
 
 print JSON::PP->new->pretty(1)->encode($out);
