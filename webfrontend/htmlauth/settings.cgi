@@ -47,8 +47,10 @@ my $msg = '';
 if ($q->request_method eq 'POST') {
   my @fields = qw/
     auth_server_base realm client_id redirect_uri api_base ems_instance_id
-    scope response_mode timezone mqtt_topic_raw mqtt_topic_summary
+    scope response_mode timezone
     mqtt_host mqtt_port mqtt_username
+    mqtt_topic_raw mqtt_topic_summary
+    mqtt_topic_intervals mqtt_topic_hourly
     fallback_tariff_name token_store_path fetch_schedule retries
   /;
 
@@ -106,7 +108,7 @@ print <<"HTML";
 
   <div class="nav-actions">
     <a class="btn btn-primary" href="@{[ h($BASEURL) ]}/start.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
-    <a class="btn btn-green"   href="@{[ h($BASEURL) ]}/run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now (rolling 24h)</a>
+    <a class="btn btn-green"   href="@{[ h($BASEURL) ]}/run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now</a>
     <a class="btn btn-orange"  href="@{[ h($BASEURL) ]}/health.cgi"><span class="emoji">🩺</span> Health</a>
     <a class="btn btn-slate"   href="@{[ h($BASEURL) ]}/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
   </div>
@@ -152,10 +154,16 @@ print <<"HTML";
           <input name="mqtt_username" type="text" value="@{[ h($cfg->{mqtt_username}//'') ]}">
           <label>Password (optional) <span class="small">(enter to update)</span></label>
           <input type="password" name="mqtt_password" placeholder="••••••••">
-          <label>Raw topic</label>
-          <input name="mqtt_topic_raw" type="text" size="50" value="@{[ h($cfg->{mqtt_topic_raw}//'') ]}">
-          <label>Summary topic</label>
-          <input name="mqtt_topic_summary" type="text" size="50" value="@{[ h($cfg->{mqtt_topic_summary}//'') ]}">
+          <div class="hr"></div>
+          <label>Raw topic (legacy)</label>
+          <input name="mqtt_topic_raw" type="text" size="50" value="@{[ h($cfg->{mqtt_topic_raw}//'ekz/ems/tariffs/raw') ]}">
+          <label>Summary topic (legacy)</label>
+          <input name="mqtt_topic_summary" type="text" size="50" value="@{[ h($cfg->{mqtt_topic_summary}//'ekz/ems/tariffs/now_plus_24h') ]}">
+          <div class="hr"></div>
+          <label>Intervals topic (computed 15‑min values)</label>
+          <input name="mqtt_topic_intervals" type="text" size="50" value="@{[ h($cfg->{mqtt_topic_intervals}//'ekz/ems/tariffs/intervals') ]}">
+          <label>Hourly averages topic (computed hourly means)</label>
+          <input name="mqtt_topic_hourly" type="text" size="50" value="@{[ h($cfg->{mqtt_topic_hourly}//'ekz/ems/tariffs/hourly') ]}">
           <label>Fallback tariff name</label>
           <input name="fallback_tariff_name" type="text" value="@{[ h($cfg->{fallback_tariff_name}//'') ]}">
         </fieldset>
@@ -169,7 +177,7 @@ print <<"HTML";
             <option value="12" @{[ ($cfg->{fetch_schedule}//'') eq '12' ? 'selected' : '' ]}>12x per day (every 2 hours, even hours)</option>
             <option value="24" @{[ ($cfg->{fetch_schedule}//'') eq '24' ? 'selected' : '' ]}>24x per day (every hour)</option>
           </select>
-          <div class="hint">The plugin fetches a rolling 24h window to include current + next day's tariffs.</div>
+          <div class="hint">After each fetch, computed costs are published to MQTT (intervals + hourly).</div>
         </fieldset>
 
         <fieldset>
