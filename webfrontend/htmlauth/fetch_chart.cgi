@@ -17,7 +17,7 @@ my $BASEURL = do {
 my $ASSET_BASE = "$BASEURL/assets";
 my $ICON_BASE  = "$BASEURL/Icons";
 
-# HTML up to the <script> tag (variables should interpolate here)
+# HTML up to the <script> tag (variables interpolate here)
 print <<"HTML";
 <!doctype html>
 <html>
@@ -41,7 +41,12 @@ print <<"HTML";
     .status { margin:.4rem 0 .3rem 0; font-size:.9rem }
     .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0 }
   </style>
+  <!-- Try to load Chart.js early; we still have an async fallback in JS -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    // Provide BASEURL for JS (used for local fallback)
+    const BASEURL = "$BASEURL";
+  </script>
 </head>
 <body id="ekz-plugin" class="plugincontent">
   <div class="app-header">
@@ -67,7 +72,7 @@ print <<"HTML";
         </select>
         <span class="muted small">Bars colored by relative level (very low → very high)</span>
       </div>
-      <div id="status" class="status muted">Press “Fetch now and draw”. This fetches, publishes (via backend), computes for UI, then renders.</div>
+      <div id="status" class="status muted">Press “Fetch now and draw”. This fetches (backend), computes for UI (no MQTT), then renders.</div>
       <div id="chartwrap">
         <canvas id="priceChart" aria-label="Price chart" role="img"></canvas>
       </div>
@@ -83,14 +88,15 @@ print <<"HTML";
   <script>
 HTML
 
-# JavaScript printed with a SINGLE-QUOTED heredoc to avoid Perl interpolation of ${...}
+# JavaScript printed with SINGLE-QUOTED heredoc to avoid Perl interpolation of ${...}
 print <<'JS';
   (() => {
     const $ = (sel) => document.querySelector(sel);
     const status = $('#status');
     const viewSel = $('#view');
     const btnFetch = $('#btnFetch');
-    const ctx = document.getElementById('priceChart').getContext('2d');
+    const canvas = document.getElementById('priceChart');
+    const ctx = canvas.getContext('2d');
 
     let chart;
     let lastReport = null;
@@ -100,16 +106,36 @@ print <<'JS';
       status.style.color = isError ? '#ef4444' : '#94a3b8';
     }
 
-    function fmtTime(iso, hourly=false) {
-      const d = new Date(iso);
-      if (isNaN(d)) return iso;
-      return d.toLocaleString(undefined, {
-        weekday: 'short',
-        hour: '2-digit',
-        minute: hourly ? undefined : '2-digit',
-        month: 'short',
-        day: '2-digit'
-      }).replace(',','');
+    // Robust loader for Chart.js with CDN first, local fallback
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = src;
+        s.async = true;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error('Failed to load ' + src));
+        document.head.appendChild(s);
+      });
+    }
+
+    async function ensureChartLib() {
+      if (window.Chart) return;
+      try {
+        await loadScript('https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js');
+      } catch (e) {
+        console.warn(e.message);
+      }
+      if (window.Chart) return;
+      // fallback to local copy under assets (put chart.umd.min.js there)
+      const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chart.umd.min.js';
+      try {
+        await loadScript(local);
+      } catch (e) {
+        console.error(e.message);
+      }
+      if (!window.Chart) {
+        throw new Error('Chart.js library not available');
+      }
     }
 
     function colorByQuantiles(values) {
@@ -147,7 +173,7 @@ print <<'JS';
       };
     }
 
-    function ensureChart() {
+    function ensureChartInstance() {
       if (chart) return chart;
       chart = new Chart(ctx, {
         data: { labels: [], datasets: [] },
@@ -170,6 +196,18 @@ print <<'JS';
       return chart;
     }
 
+    function fmtTime(iso, hourly=false) {
+      const d = new Date(iso);
+      if (isNaN(d)) return iso;
+      return d.toLocaleString(undefined, {
+        weekday: 'short',
+        hour: '2-digit',
+        minute: hourly ? undefined : '2-digit',
+        month: 'short',
+        day: '2-digit'
+      }).replace(',','');
+    }
+
     function draw(mode) {
       if (!lastReport) return;
       let labels = [], values = [];
@@ -185,7 +223,7 @@ print <<'JS';
       }
 
       const ds = makeDataset(labels, values);
-      const c = ensureChart();
+      const c = ensureChartInstance();
       c.data = ds;
       c.update();
     }
@@ -201,6 +239,9 @@ print <<'JS';
       const r2 = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
       if (!r2.ok) throw new Error('compute_costs failed: HTTP ' + r2.status);
       lastReport = await r2.json();
+
+      // 3) Ensure chart library, then render
+      await ensureChartLib();
 
       setStatus('Rendering…');
       draw(document.getElementById('view').value);
@@ -229,7 +270,7 @@ print <<'JS';
   })();
 JS
 
-# Close HTML (double-quoted heredoc is fine again)
+# Close HTML
 print <<"HTML";
   </script>
 </body>
