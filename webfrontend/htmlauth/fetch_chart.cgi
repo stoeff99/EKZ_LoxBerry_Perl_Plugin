@@ -2,21 +2,25 @@
 use strict;
 use warnings;
 
+# Render Perl errors to the browser (handy while developing)
+use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
+
 use CGI;
-use LoxBerry::System;
 use FindBin;
-require "$FindBin::Bin/common.pl";
-
-# SDK globals
-our ($lbpurl, $lbpdatadir, $lbptemplatedir);
-
-# Base URLs
-my $BASEURL    = $lbpurl || do { (my $p = $ENV{SCRIPT_NAME}//'') =~ s{/[^/]+$}{}r || '.' };
-my $ASSET_BASE = "$BASEURL/assets";
-my $ICON_BASE  = "$BASEURL/Icons";
 
 my $q = CGI->new;
+
+# Always send a header first (prevents “premature end of script headers”)
 print $q->header('text/html; charset=utf-8');
+
+# Derive a base URL from the request path (no LoxBerry globals needed)
+my $BASEURL = do {
+  my $p = $ENV{SCRIPT_NAME} // '';
+  $p =~ s{/[^/]+$}{};
+  $p || '.'
+};
+my $ASSET_BASE = "$BASEURL/assets";
+my $ICON_BASE  = "$BASEURL/Icons";
 
 print <<"HTML";
 <!doctype html>
@@ -27,7 +31,7 @@ print <<"HTML";
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
   <link rel="stylesheet" href="$BASEURL/style.css">
-  <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251217">
+  <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251219">
   <style>
     #chartwrap { position: relative; width: 100%; min-height: 340px; }
     canvas { max-height: 520px; }
@@ -67,7 +71,7 @@ print <<"HTML";
         </select>
         <span class="muted small">Bars colored by relative level (very low → very high)</span>
       </div>
-      <div id="status" class="status muted">Press “Fetch now and draw”. This will fetch new data, compute costs, and render the chart.</div>
+      <div id="status" class="status muted">Press “Fetch now and draw”. This fetches, computes and renders the chart.</div>
       <div id="chartwrap">
         <canvas id="priceChart" aria-label="Price chart" role="img"></canvas>
       </div>
@@ -108,7 +112,6 @@ print <<"HTML";
       }).replace(',','');
     }
 
-    // Build color scale by quantiles of provided values
     function colorByQuantiles(values) {
       const vs = [...values].filter(v => Number.isFinite(v)).sort((a,b)=>a-b);
       const q = (p) => {
@@ -122,14 +125,14 @@ print <<"HTML";
       const q50 = q(0.50);
       const q75 = q(0.75);
       return (v) => {
-        if (v <= q25) return '#16a34a';     // very low (green-700)
-        if (v <= q50) return '#4ade80';     // low (green-400)
-        if (v <= q75) return '#fbbf24';     // high (amber-400)
-        return '#ef4444';                   // very high (red-500)
+        if (v <= q25) return '#16a34a';
+        if (v <= q50) return '#4ade80';
+        if (v <= q75) return '#fbbf24';
+        return '#ef4444';
       };
     }
 
-    function makeDataset(data, labels, values) {
+    function makeDataset(labels, values) {
       const colorFn = colorByQuantiles(values);
       const colors = values.map(v => colorFn(v));
       return {
@@ -159,11 +162,7 @@ print <<"HTML";
             y: {
               ticks: { color: '#cbd5e1' },
               grid: { color: 'rgba(148,163,184,0.15)' },
-              title: {
-                display: true,
-                text: 'CHF/kWh',
-                color: '#cbd5e1'
-              }
+              title: { display: true, text: 'CHF/kWh', color: '#cbd5e1' }
             }
           },
           plugins: {
@@ -193,7 +192,7 @@ print <<"HTML";
         values = rows.map(r => Number(r.total_chf || 0));
       }
 
-      const ds = makeDataset(null, labels, values);
+      const ds = makeDataset(labels, values);
       const c = ensureChart();
       c.data = ds;
       c.update();
@@ -201,45 +200,43 @@ print <<"HTML";
 
     async function fetchBackendAndCompute() {
       setStatus('Fetching…');
-      // 1) Trigger backend fetch (does not show raw in UI)
+      // 1) Backend fetch (saves tariffs_latest.json and auto-publishes via compute_costs)
       const r1 = await fetch('run_rolling_fetch.cgi', { cache: 'no-store' });
       if (!r1.ok) throw new Error('Fetch backend failed: HTTP ' + r1.status);
-      // We ignore the returned JSON; compute_costs will read the saved file.
 
-      // 2) Compute costs (interval + hourly)
+      // 2) Compute costs for UI (re-reads latest file)
       setStatus('Computing costs…');
-      const r2 = await fetch('compute_costs.cgi', { cache: 'no-store' });
+      const r2 = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
       if (!r2.ok) throw new Error('compute_costs failed: HTTP ' + r2.status);
       const report = await r2.json();
       lastReport = report;
 
-      // 3) Draw with current selector
+      // 3) Draw
       setStatus('Rendering chart…');
-      draw(viewSel.value);
+      draw(document.getElementById('view').value);
 
-      // 4) Status line with brief info
+      // 4) Status
       const ic = (report && report.interval_count_output) || 0;
       const hc = (report && report.hour_count_output) || 0;
-      setStatus(`Ready. Intervals: ${ic}, hours: ${hc}.`);
+      setStatus(\`Ready. Intervals: \${ic}, hours: \${hc}.\`);
     }
 
-    // Wire UI
-    btnFetch.addEventListener('click', async (e) => {
+    document.getElementById('btnFetch').addEventListener('click', async (e) => {
       e.preventDefault();
-      btnFetch.disabled = true;
+      const btn = e.currentTarget;
+      btn.disabled = true;
       try {
         await fetchBackendAndCompute();
       } catch (err) {
         setStatus(err.message, true);
       } finally {
-        btnFetch.disabled = false;
+        btn.disabled = false;
       }
     });
 
-    viewSel.addEventListener('change', () => draw(viewSel.value));
-
-    // Optional: auto-run when page opens
-    // fetchBackendAndCompute().catch(err => setStatus(err.message, true));
+    document.getElementById('view').addEventListener('change', (e) => {
+      draw(e.target.value);
+    });
   })();
   </script>
 </body>
