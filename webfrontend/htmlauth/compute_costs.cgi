@@ -16,6 +16,9 @@ our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 my $q = CGI->new;
 print $q->header('application/json; charset=utf-8');
 
+# Allow UI to compute without publishing (to avoid duplicate MQTT)
+my $nopublish = ($q->param('nopublish') // '') ne '' ? 1 : 0;
+
 # ---- helpers ----
 
 sub read_latest_json {
@@ -210,8 +213,10 @@ my $topic_hourly    = $cfg->{mqtt_topic_hourly}
                    // $cfg->{mqtt_topic_summary}
                    // 'ekz/ems/tariffs/hourly';
 
-my $pub_intervals_ok = mqtt_publish($cfg, $topic_intervals, $json_intervals);
-my $pub_hourly_ok    = mqtt_publish($cfg, $topic_hourly,    $json_hourly);
+my ($pub_intervals_ok, $pub_hourly_ok) = (0, 0);
+if (!$nopublish) {
+  $pub_intervals_ok = mqtt_publish($cfg, $topic_intervals, $json_intervals) ? 1 : 0;
+  $pub_hourly_ok    = mqtt_publish($cfg, $topic_hourly,    $json_hourly)    ? 1 : 0;
 
 my $out = {
   source_file             => $src_path,
