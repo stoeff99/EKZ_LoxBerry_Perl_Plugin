@@ -74,6 +74,7 @@ sub hour_start_from {
   return sprintf('%04d-%02d-%02dT%02d:00:00%s', $Y,$M,$D,$h,$off);
 }
 
+# Prefer E+G+R; else I (+R) to avoid double counting
 sub kwh_total_for_block {
   my ($b) = @_;
   my $e_kwh = get_unit_value($b->{electricity},    'CHF_kWh');
@@ -87,6 +88,7 @@ sub kwh_total_for_block {
   }
 }
 
+# Prefer integrated CHF_M + regional CHF_M; else E+G+R CHF_M
 sub monthly_M_total_for_block {
   my ($b) = @_;
   my $i_m = get_unit_value($b->{integrated},     'CHF_M');
@@ -159,7 +161,7 @@ for my $b (@sorted) {
 
   my $hour_key = hour_start_from($start);
 
-  my $row = {
+  push @intervals, {
     start_timestamp  => $start,
     end_timestamp    => $end,
     chf_per_kwh_sum  => $kwh_total,
@@ -167,7 +169,6 @@ for my $b (@sorted) {
     total_chf        => $sum_total,
     month_hours_used => $hours_in_month,
   };
-  push @intervals, $row;
 
   $hour_groups{$hour_key} ||= { n => 0, kwh_sum => 0, fixed_sum => 0, total_sum => 0 };
   $hour_groups{$hour_key}{n}         += 1;
@@ -205,7 +206,7 @@ my $hourly_msg = {
 my $json_intervals = JSON::PP->new->canonical(1)->encode($intervals_msg);
 my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
 
-# FIX: use dedicated topics, with backward-compatible fallback
+# Topics (new dedicated, with backward-compatible fallback)
 my $topic_intervals = $cfg->{mqtt_topic_intervals}
                    // $cfg->{mqtt_topic_raw}
                    // 'ekz/ems/tariffs/intervals';
@@ -217,6 +218,7 @@ my ($pub_intervals_ok, $pub_hourly_ok) = (0, 0);
 if (!$nopublish) {
   $pub_intervals_ok = mqtt_publish($cfg, $topic_intervals, $json_intervals) ? 1 : 0;
   $pub_hourly_ok    = mqtt_publish($cfg, $topic_hourly,    $json_hourly)    ? 1 : 0;
+}
 
 my $out = {
   source_file             => $src_path,
@@ -227,11 +229,12 @@ my $out = {
   intervals               => \@intervals,
   hourly                  => \@hourly,
   mqtt => {
-    enabled               => !!($cfg->{mqtt_enabled}),
-    intervals_topic       => $topic_intervals,
-    hourly_topic          => $topic_hourly,
-    publish_intervals_ok  => $pub_intervals_ok ? JSON::PP::true : JSON::PP::false,
-    publish_hourly_ok     => $pub_hourly_ok    ? JSON::PP::true : JSON::PP::false,
+    enabled                  => !!($cfg->{mqtt_enabled}),
+    intervals_topic          => $topic_intervals,
+    hourly_topic             => $topic_hourly,
+    publish_intervals_ok     => $pub_intervals_ok ? JSON::PP::true : JSON::PP::false,
+    publish_hourly_ok        => $pub_hourly_ok    ? JSON::PP::true : JSON::PP::false,
+    skipped_due_to_nopublish => $nopublish ? JSON::PP::true : JSON::PP::false,
   },
 };
 
