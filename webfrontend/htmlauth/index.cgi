@@ -137,6 +137,8 @@ print <<'JS';
   const $ = (sel) => document.querySelector(sel);
 
   // Elements
+  const $ = (sel) => document.querySelector(sel);
+  const status = $('#status');  
   const chartStatus = $('#chart-status');
   const viewSel = $('#view');
   const btnRefresh = $('#btnRefresh');
@@ -369,6 +371,84 @@ print <<'JS';
 JS
 print <<"HTML";
   </script>
+
+ <div class="container">
+    <!-- New panel: Next 12 hours based on hourly averages (from compute_costs.cgi) -->
+    <div class="card" id="next12h-card">
+      <div style="display:flex;align-items:baseline;gap:10px;">
+        <h3 style="margin:0;">Next 12 hours</h3>
+        <span class="small muted">Hourly average = mean of four 15‑min intervals</span>
+      </div>
+      <div id="next12h-note" class="small muted" style="margin-top:6px;">Reading computed costs…</div>
+      <table class="costs-table" id="next12h-table" style="display:none;">
+        <thead>
+          <tr>
+            <th scope="col">Hour (local)</th>
+            <th scope="col" class="cost">Avg total (CHF/kWh)</th>
+          </tr>
+        </thead>
+        <tbody id="next12h-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      const note   = document.getElementById('next12h-note');
+      const table  = document.getElementById('next12h-table');
+      const tbody  = document.getElementById('next12h-body');
+
+      function fmtTime(iso) {
+        const d = new Date(iso);
+        if (isNaN(d)) return iso;
+        return d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', weekday: 'short', month: 'short', day: '2-digit' });
+      }
+
+      function fmtCHF(x) {
+        if (typeof x !== 'number') x = Number(x);
+        if (!isFinite(x)) return String(x);
+        // Show up to 4 decimals to preserve precision of tariff values
+        return x.toFixed(4);
+      }
+
+      fetch('compute_costs.cgi', { cache: 'no-store' })
+        .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+        .then(data => {
+          const now = Date.now();
+          const items = (data && Array.isArray(data.hourly) ? data.hourly : [])
+            .map(h => Object.assign({ _t: Date.parse(h.hour_start) }, h))
+            .filter(h => !isNaN(h._t) && h._t >= now)
+            .sort((a,b) => a._t - b._t)
+            .slice(0, 12);
+
+          if (items.length === 0) {
+            note.textContent = 'No hourly data available. Click “Fetch now” first.';
+            return;
+          }
+
+          // Build rows
+          tbody.innerHTML = '';
+          for (const h of items) {
+            const tr = document.createElement('tr');
+            const tdTime = document.createElement('td');
+            const tdCost = document.createElement('td');
+            tdTime.textContent = fmtTime(h.hour_start);
+            tdCost.textContent = fmtCHF(h.avg_total_chf);
+            tdCost.className = 'cost';
+            tr.appendChild(tdTime);
+            tr.appendChild(tdCost);
+            tbody.appendChild(tr);
+          }
+
+          note.style.display = 'none';
+          table.style.display = '';
+        })
+        .catch(err => {
+          note.textContent = 'Failed to load computed costs: ' + err.message;
+        });
+    })();
+  </script>
+
 </body>
 </html>
 HTML
