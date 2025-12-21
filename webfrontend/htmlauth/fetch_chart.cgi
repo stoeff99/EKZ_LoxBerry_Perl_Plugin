@@ -44,7 +44,6 @@ print <<"HTML";
   <!-- Try to load Chart.js early; we still have an async fallback in JS -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script>
-    // Provide BASEURL for JS (used for local fallback)
     const BASEURL = "$BASEURL";
   </script>
 </head>
@@ -125,11 +124,16 @@ print <<'JS';
     if (!window.Chart) throw new Error('Chart.js not available');
   }
   async function ensureTimeAdapter() {
-    if (window.Chart && Chart._adapters && Chart._adapters._date) return;
-    try { await loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3'); } catch {}
-    if (window.Chart && Chart._adapters && Chart._adapters._date) return;
+    const hasAdapter = () => !!(window.Chart && Chart._adapters && Chart._adapters._date && Chart._adapters._date.parse);
+    if (hasAdapter()) return;
+    try {
+      await loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js');
+    } catch (e) {
+      console.warn('CDN adapter failed:', e.message);
+    }
+    if (hasAdapter()) return;
     const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chartjs-adapter-date-fns.bundle.min.js';
-    try { await loadScript(local); } catch {}
+    try { await loadScript(local); } catch (e) { console.error('Local adapter failed:', e.message); }
   }
 
   // Color scale by quantiles
@@ -158,7 +162,19 @@ print <<'JS';
     }
   }
 
-  // Create/update chart with true time axis; destroy existing instance to avoid "canvas in use"
+  function fmtLabel(iso, hourly=false) {
+    const d = new Date(iso);
+    if (isNaN(d)) return iso;
+    return d.toLocaleString(undefined, {
+      weekday: 'short',
+      hour: '2-digit',
+      minute: hourly ? undefined : '2-digit',
+      month: 'short',
+      day: '2-digit'
+    }).replace(',','');
+  }
+
+  // Create/update chart; uses time axis if adapter is ready, else category fallback
   async function renderChart(mode) {
     await ensureChartLib();
     await ensureTimeAdapter();
@@ -166,54 +182,98 @@ print <<'JS';
     const unit = mode === 'hourly' ? 'hour' : 'minute';
     const points = pointsFromReport(mode);
     const colorFn = colorByQuantiles(points.map(p => p.y));
+    const adapterReady = !!(window.Chart && Chart._adapters && Chart._adapters._date && Chart._adapters._date.parse);
 
-    const data = {
-      datasets: [{
-        type: 'bar',
-        label: 'Total',
-        data: points,
-        parsing: false,
-        backgroundColor: points.map(p => colorFn(p.y)),
-        borderRadius: 4,
-      }]
-    };
-
-    const options = {
-      responsive: true,
-      maintainAspectRatio: false,
-      scales: {
-        x: {
-          type: 'time',
-          time: { unit, displayFormats: { hour: 'HH:mm', minute: 'HH:mm' } },
-          ticks: { source: 'data', color: '#cbd5e1', maxRotation: 0, autoSkip: true },
-          grid: { color: 'rgba(148,163,184,0.15)' }
-        },
-        y: {
-          ticks: { color: '#cbd5e1' },
-          grid: { color: 'rgba(148,163,184,0.15)' },
-          title: { display: true, text: 'CHF/kWh', color: '#cbd5e1' }
-        }
-      },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            title: (items) => {
-              const ts = items?.[0]?.parsed?.x;
-              if (!ts) return '';
-              const d = new Date(ts);
-              return isNaN(d)
-                ? String(ts)
-                : d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', weekday: 'short', month: 'short', day: '2-digit' });
-            },
-            label: (ctx) => ` Total: ${Number(ctx.parsed.y).toFixed(4)} CHF/kWh`
-          }
-        }
-      }
-    };
-
+    // Destroy any existing chart instance to avoid "canvas in use"
     const existing = (window.Chart && Chart.getChart) ? Chart.getChart(document.getElementById('priceChart')) : null;
     if (existing) existing.destroy();
+
+    let data, options;
+    if (adapterReady) {
+      data = {
+        datasets: [{
+          type: 'bar',
+          label: 'Total',
+          data: points,
+          parsing: false,
+          backgroundColor: points.map(p => colorFn(p.y)),
+          borderRadius: 4,
+        }]
+      };
+      options = {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            type: 'time',
+            time: { unit, displayFormats: { hour: 'HH:mm', minute: 'HH:mm' } },
+            ticks: { source: 'data', color: '#cbd5e1', maxRotation: 0, autoSkip: true },
+            grid: { color: 'rgba(148,163,184,0.15)' }
+          },
+          y: {
+            ticks: { color: '#cbd5e1' },
+            grid: { color: 'rgba(148,163,184,0.15)' },
+            title: { display: true, text: 'CHF/kWh', color: '#cbd5e1' }
+          }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: (items) => {
+                const ts = items?.[0]?.parsed?.x;
+                if (!ts) return '';
+                const d = new Date(ts);
+                return isNaN(d)
+                  ? String(ts)
+                  : d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', weekday: 'short', month: 'short', day: '2-digit' });
+              },
+              label: (ctx) => ` Total: ${Number(ctx.parsed.y).toFixed(4)} CHF/kWh`
+            }
+          }
+        }
+      };
+    } else {
+      const hourly = mode === 'hourly';
+      const labels = points.map(p => fmtLabel(p.x, hourly));
+      const values = points.map(p => p.y);
+
+      data = {
+        labels,
+        datasets: [{
+          type: 'bar',
+          label: 'Total',
+          data: values,
+          backgroundColor: values.map(v => colorFn(v)),
+          borderRadius: 4,
+        }]
+      };
+      options = {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: {
+            type: 'category',
+            ticks: { color: '#cbd5e1', maxRotation: 0, autoSkip: true },
+            grid: { color: 'rgba(148,163,184,0.15)' }
+          },
+          y: {
+            ticks: { color: '#cbd5e1' },
+            grid: { color: 'rgba(148,163,184,0.15)' },
+            title: { display: true, text: 'CHF/kWh', color: '#cbd5e1' }
+          }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: (items) => items?.[0]?.label ?? '',
+              label: (ctx) => ` Total: ${Number(ctx.raw).toFixed(4)} CHF/kWh`
+            }
+          }
+        }
+      };
+    }
 
     chart = new Chart(ctx, { data, options });
   }
@@ -254,27 +314,9 @@ print <<'JS';
   });
 
   viewSel.addEventListener('change', () => renderChart(viewSel.value));
-
-  // Optional: auto-load on page open
-  // (async () => {
-  //   try {
-  //     setStatus('Fetching (backend)…');
-  //     const r1 = await fetch('run_rolling_fetch.cgi', { cache: 'no-store' });
-  //     if (!r1.ok) throw new Error('Fetch backend failed: HTTP ' + r1.status);
-  //     setStatus('Computing costs for UI…');
-  //     const r2 = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
-  //     if (!r2.ok) throw new Error('compute_costs failed: HTTP ' + r2.status);
-  //     lastReport = await r2.json();
-  //     await renderChart(document.getElementById('view').value);
-  //     setStatus('Ready.');
-  //   } catch (err) {
-  //     setStatus(err.message, true);
-  //   }
-  // })();
 })();
 JS
 
-# Close HTML
 print <<"HTML";
   </script>
 </body>
