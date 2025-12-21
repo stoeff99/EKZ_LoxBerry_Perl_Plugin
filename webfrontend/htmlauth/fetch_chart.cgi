@@ -55,8 +55,9 @@ print <<"HTML";
   </div>
 
   <div class="nav-actions">
-    <a class="btn btn-slate" href="$BASEURL/index.cgi"><span class="emoji">🏠</span> Home</a>
-    <a class="btn btn-slate" href="$BASEURL/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
+    <a class="btn btn-green"   href="@{[ h($BASEURL) ]}/run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now</a>
+    <a class="btn btn-primary" href="$BASEURL/index.cgi"><span class="emoji">🏠</span> Home</a>
+    <a class="btn btn-primary"   href="@{[ h($BASEURL) ]}/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
   </div>
 
   <div class="container">
