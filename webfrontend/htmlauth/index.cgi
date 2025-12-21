@@ -113,80 +113,7 @@ print <<"HTML";
 HTML
 
 # Use single-quoted heredoc to avoid Perl interpolation in JS template literals
-print <<'JS';
-(() => {
-  const $ = (sel) => document.querySelector(sel);
-  const status = $('#status');
-  const viewSel = $('#view');
-  const btnFetch = $('#btnFetch');
-  const ctx = document.getElementById('priceChart').getContext('2d');
-
-  const next12Note  = $('#next12h-note');
-  const next12Table = $('#next12h-table');
-  const next12Body  = $('#next12h-body');
-
-  let chart;
-  let lastReport = null;
-
-  function setStatus(msg, isError=false) {
-    status.textContent = msg;
-    status.style.color = isError ? '#ef4444' : '#94a3b8';
-  }
-
-  // Loader helpers (CDN-first, local fallback)
-  function loadScript(src) {
-    return new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = src;
-      s.async = true;
-      s.onload = () => resolve();
-      s.onerror = () => reject(new Error('Failed to load ' + src));
-      document.head.appendChild(s);
-    });
-  }
-  async function ensureChartLib() {
-    if (window.Chart) return;
-    try { await loadScript('https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js'); } catch {}
-    if (window.Chart) return;
-    const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chart.umd.min.js';
-    try { await loadScript(local); } catch {}
-    if (!window.Chart) throw new Error('Chart.js not available');
-  }
-  async function ensureTimeAdapter() {
-    if (window.Chart && Chart._adapters && Chart._adapters._date) return;
-    try { await loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3'); } catch {}
-    if (window.Chart && Chart._adapters && Chart._adapters._date) return;
-    const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chartjs-adapter-date-fns.bundle.min.js';
-    try { await loadScript(local); } catch {}
-  }
-
-  // Color scale by quantiles
-  function colorByQuantiles(values) {
-    const vs = [...values].filter(v => Number.isFinite(v)).sort((a,b)=>a-b);
-    const q = (p) => {
-      if (vs.length === 0) return 0;
-      const idx = (vs.length-1) * p;
-      const lo = Math.floor(idx), hi = Math.ceil(idx);
-      if (lo === hi) return vs[lo];
-      return vs[lo] + (vs[hi]-vs[lo])*(idx-lo);
-    };
-    const q25 = q(0.25), q50 = q(0.50), q75 = q(0.75);
-    return (v) => v <= q25 ? '#16a34a' : v <= q50 ? '#4ade80' : v <= q75 ? '#fbbf24' : '#ef4444';
-  }
-
-  // Build points [{x: ISO, y: number}] for mode
-  function pointsFromReport(mode) {
-    if (!lastReport) return [];
-    if (mode === 'hourly') {
-      const rows = Array.isArray(lastReport.hourly) ? lastReport.hourly : [];
-      return rows.map(r => ({ x: r.hour_start, y: Number(r.avg_total_chf || 0) }));
-    } else {
-      const rows = Array.isArray(lastReport.intervals) ? lastReport.intervals : [];
-      return rows.map(r => ({ x: r.start_timestamp, y: Number(r.total_chf || 0) }));
-    }
-  }
-
-  // Create/update chart with true time axis
+print <<'JS_PATCH';
   async function renderChart(mode) {
     await ensureChartLib();
     await ensureTimeAdapter();
@@ -199,8 +126,8 @@ print <<'JS';
       datasets: [{
         type: 'bar',
         label: 'Total',
-        data: points,
-        parsing: false,
+        data: points,        // each point: {x: ISO timestamp, y: value}
+        parsing: false,      // we already provide x/y
         backgroundColor: points.map(p => colorFn(p.y)),
         borderRadius: 4,
       }]
@@ -246,101 +173,16 @@ print <<'JS';
       }
     };
 
-    if (!chart) {
-      chart = new Chart(ctx, { data, options });
-    } else {
-      chart.data = data;
-      chart.options = options;
-      chart.update();
+    // IMPORTANT: destroy any existing chart on this canvas to avoid
+    // "Canvas is already in use. Chart with ID 'X' must be destroyed..."
+    const existing = (window.Chart && Chart.getChart) ? Chart.getChart(ctx.canvas) : null;
+    if (existing) {
+      existing.destroy();
     }
+
+    chart = new Chart(ctx, { data, options });
   }
-
-  function fillNext12Hours() {
-    if (!lastReport) return;
-
-    const now = Date.now();
-    const items = (Array.isArray(lastReport.hourly) ? lastReport.hourly : [])
-      .map(h => Object.assign({ _t: Date.parse(h.hour_start) }, h))
-      .filter(h => !isNaN(h._t) && h._t >= now)
-      .sort((a,b) => a._t - b._t)
-      .slice(0, 12);
-
-    if (items.length === 0) {
-      next12Note.textContent = 'No hourly data available. Click “Fetch now and draw”.';
-      next12Table.style.display = 'none';
-      return;
-    }
-
-    next12Body.innerHTML = '';
-    for (const h of items) {
-      const tr = document.createElement('tr');
-      const tdTime = document.createElement('td');
-      const tdCost = document.createElement('td');
-      const d = new Date(h.hour_start);
-      tdTime.textContent = isNaN(d)
-        ? h.hour_start
-        : d.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit', month: 'short', day: '2-digit' }).replace(',','');
-      tdCost.textContent = Number(h.avg_total_chf || 0).toFixed(4);
-      tdCost.className = 'cost';
-      tr.appendChild(tdTime);
-      tr.appendChild(tdCost);
-      next12Body.appendChild(tr);
-    }
-    next12Note.style.display = 'none';
-    next12Table.style.display = '';
-  }
-
-  async function fetchBackendAndCompute() {
-    setStatus('Fetching (backend)…');
-    const r1 = await fetch('run_rolling_fetch.cgi', { cache: 'no-store' });
-    if (!r1.ok) throw new Error('Fetch backend failed: HTTP ' + r1.status);
-
-    setStatus('Computing costs for UI…');
-    const r2 = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
-    if (!r2.ok) throw new Error('compute_costs failed: HTTP ' + r2.status);
-    lastReport = await r2.json();
-
-    setStatus('Rendering…');
-    await renderChart(document.getElementById('view').value);
-    fillNext12Hours();
-
-    const ic = (lastReport && lastReport.interval_count_output) || 0;
-    const hc = (lastReport && lastReport.hour_count_output) || 0;
-    setStatus(`Ready. Intervals: ${ic}, hours: ${hc}.`);
-  }
-
-  // Buttons / events
-  btnFetch.addEventListener('click', async (e) => {
-    e.preventDefault();
-    const btn = e.currentTarget;
-    btn.disabled = true;
-    try {
-      await fetchBackendAndCompute();
-    } catch (err) {
-      setStatus(err.message, true);
-    } finally {
-      btn.disabled = false;
-    }
-  });
-
-  viewSel.addEventListener('change', () => renderChart(viewSel.value));
-
-  // Initial load: draw whatever is already on disk
-  (async () => {
-    try {
-      setStatus('Loading computed costs…');
-      const r = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
-      if (!r.ok) throw new Error('compute_costs failed: HTTP ' + r.status);
-      lastReport = await r.json();
-      await renderChart(viewSel.value);
-      fillNext12Hours();
-      setStatus('Ready.');
-    } catch (err) {
-      setStatus(err.message, true);
-    }
-  })();
-})();
-JS
+JS_PATCH
 
 print <<"HTML";
   </script>
