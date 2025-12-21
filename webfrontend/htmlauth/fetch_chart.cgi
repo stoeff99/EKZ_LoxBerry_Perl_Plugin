@@ -89,7 +89,76 @@ print <<"HTML";
 HTML
 
 # JavaScript printed with SINGLE-QUOTED heredoc to avoid Perl interpolation of ${...}
-print <<'JS_PATCH';
+print <<'JS';
+(() => {
+  const $ = (sel) => document.querySelector(sel);
+  const status = $('#status');
+  const viewSel = $('#view');
+  const btnFetch = $('#btnFetch');
+  const ctx = document.getElementById('priceChart').getContext('2d');
+
+  let chart;
+  let lastReport = null;
+
+  function setStatus(msg, isError=false) {
+    status.textContent = msg;
+    status.style.color = isError ? '#ef4444' : '#94a3b8';
+  }
+
+  // Loader helpers (CDN-first, local fallback)
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error('Failed to load ' + src));
+      document.head.appendChild(s);
+    });
+  }
+  async function ensureChartLib() {
+    if (window.Chart) return;
+    try { await loadScript('https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js'); } catch {}
+    if (window.Chart) return;
+    const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chart.umd.min.js';
+    try { await loadScript(local); } catch {}
+    if (!window.Chart) throw new Error('Chart.js not available');
+  }
+  async function ensureTimeAdapter() {
+    if (window.Chart && Chart._adapters && Chart._adapters._date) return;
+    try { await loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3'); } catch {}
+    if (window.Chart && Chart._adapters && Chart._adapters._date) return;
+    const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chartjs-adapter-date-fns.bundle.min.js';
+    try { await loadScript(local); } catch {}
+  }
+
+  // Color scale by quantiles
+  function colorByQuantiles(values) {
+    const vs = [...values].filter(v => Number.isFinite(v)).sort((a,b)=>a-b);
+    const q = (p) => {
+      if (vs.length === 0) return 0;
+      const idx = (vs.length-1) * p;
+      const lo = Math.floor(idx), hi = Math.ceil(idx);
+      if (lo === hi) return vs[lo];
+      return vs[lo] + (vs[hi]-vs[lo])*(idx-lo);
+    };
+    const q25 = q(0.25), q50 = q(0.50), q75 = q(0.75);
+    return (v) => v <= q25 ? '#16a34a' : v <= q50 ? '#4ade80' : v <= q75 ? '#fbbf24' : '#ef4444';
+  }
+
+  // Build points [{x: ISO, y: number}] for mode
+  function pointsFromReport(mode) {
+    if (!lastReport) return [];
+    if (mode === 'hourly') {
+      const rows = Array.isArray(lastReport.hourly) ? lastReport.hourly : [];
+      return rows.map(r => ({ x: r.hour_start, y: Number(r.avg_total_chf || 0) }));
+    } else {
+      const rows = Array.isArray(lastReport.intervals) ? lastReport.intervals : [];
+      return rows.map(r => ({ x: r.start_timestamp, y: Number(r.total_chf || 0) }));
+    }
+  }
+
+  // Create/update chart with true time axis; destroy existing instance to avoid "canvas in use"
   async function renderChart(mode) {
     await ensureChartLib();
     await ensureTimeAdapter();
@@ -102,8 +171,8 @@ print <<'JS_PATCH';
       datasets: [{
         type: 'bar',
         label: 'Total',
-        data: points,        // each point: {x: ISO timestamp, y: value}
-        parsing: false,      // we already provide x/y
+        data: points,
+        parsing: false,
         backgroundColor: points.map(p => colorFn(p.y)),
         borderRadius: 4,
       }]
@@ -115,16 +184,8 @@ print <<'JS_PATCH';
       scales: {
         x: {
           type: 'time',
-          time: {
-            unit,
-            displayFormats: { hour: 'HH:mm', minute: 'HH:mm' }
-          },
-          ticks: {
-            source: 'data',
-            color: '#cbd5e1',
-            maxRotation: 0,
-            autoSkip: true
-          },
+          time: { unit, displayFormats: { hour: 'HH:mm', minute: 'HH:mm' } },
+          ticks: { source: 'data', color: '#cbd5e1', maxRotation: 0, autoSkip: true },
           grid: { color: 'rgba(148,163,184,0.15)' }
         },
         y: {
@@ -141,7 +202,9 @@ print <<'JS_PATCH';
               const ts = items?.[0]?.parsed?.x;
               if (!ts) return '';
               const d = new Date(ts);
-              return isNaN(d) ? String(ts) : d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', weekday: 'short', month: 'short', day: '2-digit' });
+              return isNaN(d)
+                ? String(ts)
+                : d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', weekday: 'short', month: 'short', day: '2-digit' });
             },
             label: (ctx) => ` Total: ${Number(ctx.parsed.y).toFixed(4)} CHF/kWh`
           }
@@ -149,16 +212,67 @@ print <<'JS_PATCH';
       }
     };
 
-    // IMPORTANT: destroy any existing chart on this canvas to avoid
-    // "Canvas is already in use. Chart with ID 'X' must be destroyed..."
-    const existing = (window.Chart && Chart.getChart) ? Chart.getChart(ctx.canvas) : null;
-    if (existing) {
-      existing.destroy();
-    }
+    const existing = (window.Chart && Chart.getChart) ? Chart.getChart(document.getElementById('priceChart')) : null;
+    if (existing) existing.destroy();
 
     chart = new Chart(ctx, { data, options });
   }
-JS_PATCH
+
+  async function fetchBackendAndCompute() {
+    setStatus('Fetching (backend)…');
+    const r1 = await fetch('run_rolling_fetch.cgi', { cache: 'no-store' });
+    if (!r1.ok) throw new Error('Fetch backend failed: HTTP ' + r1.status);
+
+    setStatus('Computing costs for UI…');
+    const r2 = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
+    if (!r2.ok) throw new Error('compute_costs failed: HTTP ' + r2.status);
+    lastReport = await r2.json();
+
+    if (lastReport && lastReport.error) {
+      throw new Error('compute_costs error: ' + (lastReport.message || lastReport.error));
+    }
+
+    setStatus('Rendering…');
+    await renderChart(document.getElementById('view').value);
+
+    const ic = (lastReport && lastReport.interval_count_output) || 0;
+    const hc = (lastReport && lastReport.hour_count_output) || 0;
+    setStatus(`Ready. Intervals: ${ic}, hours: ${hc}.`);
+  }
+
+  btnFetch.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      await fetchBackendAndCompute();
+    } catch (err) {
+      setStatus(err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  viewSel.addEventListener('change', () => renderChart(viewSel.value));
+
+  // Optional: auto-load on page open
+  // (async () => {
+  //   try {
+  //     setStatus('Fetching (backend)…');
+  //     const r1 = await fetch('run_rolling_fetch.cgi', { cache: 'no-store' });
+  //     if (!r1.ok) throw new Error('Fetch backend failed: HTTP ' + r1.status);
+  //     setStatus('Computing costs for UI…');
+  //     const r2 = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
+  //     if (!r2.ok) throw new Error('compute_costs failed: HTTP ' + r2.status);
+  //     lastReport = await r2.json();
+  //     await renderChart(document.getElementById('view').value);
+  //     setStatus('Ready.');
+  //   } catch (err) {
+  //     setStatus(err.message, true);
+  //   }
+  // })();
+})();
+JS
 
 # Close HTML
 print <<"HTML";
