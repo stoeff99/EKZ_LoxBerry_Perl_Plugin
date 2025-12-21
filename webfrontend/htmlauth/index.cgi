@@ -62,8 +62,8 @@ print <<"HTML";
 
   <div class="nav-actions">
     <a class="btn btn-primary" href="$BASEURL/start.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
-    <a class="btn btn-green"   href="$BASEURL/fetch_chart.cgi"><span class="emoji">⚡</span> Fetch now</a>
-    <a class="btn btn-slate"   href="$BASEURL/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
+    <a class="btn btn-primary"   href="$BASEURL/fetch_chart.cgi"><span class="emoji">⚡</span> Fetch now</a>
+    <a class="btn btn-primary"   href="$BASEURL/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
   </div>
 
   <div class="container">
