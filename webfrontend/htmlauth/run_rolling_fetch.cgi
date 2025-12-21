@@ -171,6 +171,14 @@ my $ok = eval {
   # Publish using raw payload (leave as-is). If you need normalized, call publish with $norm.
   eval { publish_tariffs_to_mqtt($cfg, $payload, $source, $start_iso, $end_iso); 1 };
 
+  # NEW: Trigger computed publishes (intervals + hourly) via compute_costs.cgi (without nopublish)
+  eval {
+    my $compute = File::Spec->catfile($FindBin::Bin, 'compute_costs.cgi');
+    my $out = qx{/usr/bin/perl $compute};
+    LOGINF("compute_costs.cgi invoked to publish intervals/hourly.");
+    1;
+  };
+
   # Return normalized data (rows alias kept)
   my $prices = $norm->{prices} // [];
   my $out = {
