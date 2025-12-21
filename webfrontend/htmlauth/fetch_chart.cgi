@@ -89,69 +89,7 @@ print <<"HTML";
 HTML
 
 # JavaScript printed with SINGLE-QUOTED heredoc to avoid Perl interpolation of ${...}
-print <<'JS';
-(() => {
-  const $ = (sel) => document.querySelector(sel);
-  const viewSel = $('#view');
-  const ctx = document.getElementById('priceChart').getContext('2d');
-
-  let chart;
-  let lastReport = null;
-
-  // Loader helpers (CDN first, local fallback under BASEURL/assets)
-  function loadScript(src) {
-    return new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = src;
-      s.async = true;
-      s.onload = () => resolve();
-      s.onerror = () => reject(new Error('Failed to load ' + src));
-      document.head.appendChild(s);
-    });
-  }
-  async function ensureChartLib() {
-    if (window.Chart) return;
-    try { await loadScript('https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js'); } catch {}
-    if (window.Chart) return;
-    const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chart.umd.min.js';
-    try { await loadScript(local); } catch {}
-    if (!window.Chart) throw new Error('Chart.js not available');
-  }
-  async function ensureTimeAdapter() {
-    if (window.Chart && Chart._adapters && Chart._adapters._date) return;
-    try { await loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3'); } catch {}
-    if (window.Chart && Chart._adapters && Chart._adapters._date) return;
-    const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chartjs-adapter-date-fns.bundle.min.js';
-    try { await loadScript(local); } catch {}
-  }
-
-  // Color scale by quantiles
-  function colorByQuantiles(values) {
-    const vs = [...values].filter(v => Number.isFinite(v)).sort((a,b)=>a-b);
-    const q = (p) => {
-      if (vs.length === 0) return 0;
-      const idx = (vs.length-1) * p;
-      const lo = Math.floor(idx), hi = Math.ceil(idx);
-      if (lo === hi) return vs[lo];
-      return vs[lo] + (vs[hi]-vs[lo])*(idx-lo);
-    };
-    const q25 = q(0.25), q50 = q(0.50), q75 = q(0.75);
-    return (v) => v <= q25 ? '#16a34a' : v <= q50 ? '#4ade80' : v <= q75 ? '#fbbf24' : '#ef4444';
-  }
-
-  // Build points [{x: ISO, y: number}] for mode
-  function pointsFromReport(mode) {
-    if (!lastReport) return [];
-    if (mode === 'hourly') {
-      const rows = Array.isArray(lastReport.hourly) ? lastReport.hourly : [];
-      return rows.map(r => ({ x: r.hour_start, y: Number(r.avg_total_chf || 0) }));
-    } else {
-      const rows = Array.isArray(lastReport.intervals) ? lastReport.intervals : [];
-      return rows.map(r => ({ x: r.start_timestamp, y: Number(r.total_chf || 0) }));
-    }
-  }
-
-  // Create/update chart with true time axis
+print <<'JS_PATCH';
   async function renderChart(mode) {
     await ensureChartLib();
     await ensureTimeAdapter();
@@ -211,31 +149,16 @@ print <<'JS';
       }
     };
 
-    if (!chart) {
-      chart = new Chart(ctx, { data, options });
-    } else {
-      chart.data = data;
-      chart.options = options;
-      chart.update();
+    // IMPORTANT: destroy any existing chart on this canvas to avoid
+    // "Canvas is already in use. Chart with ID 'X' must be destroyed..."
+    const existing = (window.Chart && Chart.getChart) ? Chart.getChart(ctx.canvas) : null;
+    if (existing) {
+      existing.destroy();
     }
+
+    chart = new Chart(ctx, { data, options });
   }
-
-  // Expose a helper if you prefer calling from elsewhere
-  window.ChartEKZ = {
-    async drawWith(report, mode) {
-      lastReport = report;
-      await renderChart(mode || (viewSel ? viewSel.value : 'intervals'));
-    }
-  };
-
-  if (viewSel) {
-    viewSel.addEventListener('change', () => renderChart(viewSel.value));
-  }
-
-  // If you want auto-load on page open (read from disk without fetch):
-  // fetch('compute_costs.cgi?nopublish=1').then(r => r.json()).then(j => { lastReport = j; renderChart(viewSel.value); });
-})();
-JS
+JS_PATCH
 
 # Close HTML
 print <<"HTML";
