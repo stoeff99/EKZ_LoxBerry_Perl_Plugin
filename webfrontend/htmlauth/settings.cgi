@@ -110,6 +110,7 @@ print <<"HTML";
     <a class="btn btn-primary" href="@{[ h($BASEURL) ]}/start.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
     <a class="btn btn-green"   href="@{[ h($BASEURL) ]}/run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now</a>
     <a class="btn btn-slate"  href="@{[ h($BASEURL) ]}/health.cgi"><span class="emoji">🩺</span> Health</a>
+    <a class="btn btn-primary" href="$BASEURL/index.cgi"><span class="emoji">🏠</span> Home</a>
     <a class="btn btn-primary"   href="@{[ h($BASEURL) ]}/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
   </div>
 
