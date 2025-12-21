@@ -2,87 +2,74 @@
 use strict;
 use warnings;
 
+use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI;
-use LoxBerry::System;
-use FindBin;
-require "$FindBin::Bin/common.pl";
-
-# SDK globals
-our ($lbpurl, $lbpdatadir, $lbptemplatedir);
-
-# Base URLs
-my $BASEURL    = $lbpurl || do { (my $p = $ENV{SCRIPT_NAME}//'') =~ s{/[^/]+$}{}r || '.' };
-my $ASSET_BASE = "$BASEURL/assets";
-my $ICON_BASE  = "$BASEURL/Icons";
 
 my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
 
-# Determine status line from runtime (non-fatal if helpers unavailable)
-my $cfg = eval { load_cfg() } // {};
-my ($link_status, $link_url, $err) = eval { try_ensure_linked($cfg) } // ('unknown','',undef);
-my $signed_in = eval { has_tokens($cfg) } // 0;
+# Derive base URL from this script path
+my $BASEURL = do {
+  my $p = $ENV{SCRIPT_NAME} // '';
+  $p =~ s{/[^/]+$}{};
+  $p || '.'
+};
+my $ASSET_BASE = "$BASEURL/assets";
+my $ICON_BASE  = "$BASEURL/Icons";
 
-my $status_line = !$signed_in                           ? 'Not signed in'
-                 : (($link_status // '') eq 'linked')        ? 'Linked to myEKZ'
-                 : (($link_status // '') eq 'link_required') ? 'Link required'
-                 : 'Unknown';
-
-my $linking_note = '';
-if ($signed_in && defined $link_status && $link_status eq 'link_required' && $link_url) {
-  $linking_note = qq{<p class="alert alert-warn"><a href="$link_url">Complete EKZ linking</a></p>};
-} elsif (defined $err && $err ne '') {
-  $linking_note = qq{<p class="alert alert-err">Link check error: } . CGI::escapeHTML($err) . qq{</p>};
-}
-
+# HTML shell + styles (same look-and-feel as fetch_chart.cgi)
 print <<"HTML";
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>EKZ Dynamic Price</title>
+  <title>EKZ – Preise (berechnet)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
   <link rel="stylesheet" href="$BASEURL/style.css">
   <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251219">
   <style>
+    /* Chart card */
+    #chartwrap { position: relative; width: 100%; min-height: 340px; }
+    canvas { max-height: 520px; }
+    .controls { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin-bottom:.5rem;}
+    .legend { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:.5rem; color:#cbd5e1 }
+    .dot { width:11px; height:11px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle }
+    .muted { color:#94a3b8 }
+    .btn { padding:.45rem .8rem; border-radius:8px; border:1px solid rgba(255,255,255,.18); background:#0f172a; color:#e5e7eb; cursor:pointer }
+    .btn:hover { background:#111827 }
+    select { padding:.35rem .6rem; border-radius:8px; border:1px solid rgba(255,255,255,.15); background:#0b1220; color:#e5e7eb }
+    .status { margin:.4rem 0 .3rem 0; font-size:.9rem }
+
+    /* Next 12 hours table */
     .costs-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
     .costs-table th, .costs-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
     .costs-table th { text-align: left; color: #9fb0c9; font-weight: 700; }
     .costs-table td.cost { text-align: right; font-variant-numeric: tabular-nums; }
-    .muted { color: #9fb0c9; }
-    #chartwrap { position: relative; width: 100%; min-height: 320px; }
-    canvas { max-height: 520px; }
-    .legend { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:.5rem; color:#cbd5e1 }
-    .dot { width:11px; height:11px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle }
-    .controls { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin: 6px 0 8px 0; }
-    select { padding:.35rem .6rem; border-radius:8px; border:1px solid rgba(255,255,255,.15); background:#0b1220; color:#e5e7eb }
-    .status { margin:.35rem 0; font-size:.9rem; color:#94a3b8 }
   </style>
-  <!-- Try CDN first; JS will also have a fallback to local assets -->
+
+  <!-- Try to load Chart.js early; JS below also has a fallback to local assets -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script>
+    // Provide BASEURL for JS (used for local fallback of Chart.js)
     const BASEURL = "$BASEURL";
   </script>
 </head>
 <body id="ekz-plugin" class="plugincontent">
   <div class="app-header">
     <div class="banner">
-      <div class="title">EKZ Dynamic Price</div>
+      <div class="title">EKZ – Preise (berechnet)</div>
     </div>
   </div>
 
   <div class="nav-actions">
     <a class="btn btn-primary" href="$BASEURL/start.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
     <a class="btn btn-green"   href="$BASEURL/fetch_chart.cgi"><span class="emoji">⚡</span> Fetch now</a>
-    <a class="btn btn-orange"  href="$BASEURL/health.cgi"><span class="emoji">🩺</span> Health</a>
     <a class="btn btn-slate"   href="$BASEURL/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
   </div>
 
-  <h2 class="status-title">Status: $status_line</h2>
-  $linking_note
-
   <div class="container">
+    <!-- Chart card (identical behavior and visuals to fetch_chart.cgi) -->
     <div class="card">
       <div class="controls">
         <button id="btnFetch" class="btn"><span class="emoji">⚡</span> Fetch now and draw</button>
@@ -104,9 +91,8 @@ print <<"HTML";
         <span><span class="dot" style="background:#ef4444"></span>Sehr hoch</span>
       </div>
     </div>
-  </div>
 
-    <!-- Existing: Next 12 hours table -->
+    <!-- Next 12 hours table (kept on index) -->
     <div class="card" id="next12h-card">
       <div style="display:flex;align-items:baseline;gap:10px;">
         <h3 style="margin:0;">Next 12 hours</h3>
@@ -123,85 +109,12 @@ print <<"HTML";
         <tbody id="next12h-body"></tbody>
       </table>
     </div>
-
-    <div class="card">
-      <p>“Fetch now” opens a page that fetches new data, publishes computed MQTT (via backend), and shows an interactive chart.</p>
-    </div>
   </div>
 
   <script>
+HTML
 
-# HTML up to the <script> tag (variables interpolate here)
-print <<"HTML";
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>EKZ – Fetch & Chart</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
-  <link rel="stylesheet" href="$BASEURL/style.css">
-  <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251219">
-  <style>
-    #chartwrap { position: relative; width: 100%; min-height: 340px; }
-    canvas { max-height: 520px; }
-    .controls { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin-bottom:.5rem;}
-    .legend { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:.5rem; color:#cbd5e1 }
-    .dot { width:11px; height:11px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle }
-    .muted { color:#94a3b8 }
-    .btn { padding:.45rem .8rem; border-radius:8px; border:1px solid rgba(255,255,255,.18); background:#0f172a; color:#e5e7eb; cursor:pointer }
-    .btn:hover { background:#111827 }
-    select { padding:.35rem .6rem; border-radius:8px; border:1px solid rgba(255,255,255,.15); background:#0b1220; color:#e5e7eb }
-    .status { margin:.4rem 0 .3rem 0; font-size:.9rem }
-    .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0 }
-  </style>
-  <!-- Try to load Chart.js early; we still have an async fallback in JS -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script>
-    // Provide BASEURL for JS (used for local fallback)
-    const BASEURL = "$BASEURL";
-  </script>
-</head>
-<body id="ekz-plugin" class="plugincontent">
-  <div class="app-header">
-    <div class="banner">
-      <div class="title">EKZ – Preise (berechnet)</div>
-    </div>
-  </div>
-
-  <div class="nav-actions">
-    <a class="btn btn-primary" href="$BASEURL/start.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
-    <a class="btn btn-slate" href="$BASEURL/index.cgi"><span class="emoji">🏠</span> Overview</a>
-    <a class="btn btn-slate" href="$BASEURL/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
-  </div>
-
-  <div class="container">
-    <div class="card">
-      <div class="controls">
-        <button id="btnFetch" class="btn"><span class="emoji">⚡</span> Fetch now and draw</button>
-        <label for="view" class="sr-only">View</label>
-        <select id="view">
-          <option value="intervals" selected>15‑minute intervals (total)</option>
-          <option value="hourly">Hourly average (total)</option>
-        </select>
-        <span class="muted small">Bars colored by relative level (very low → very high)</span>
-      </div>
-      <div id="status" class="status muted">Press “Fetch now and draw”. This fetches (backend), computes for UI (no MQTT), then renders.</div>
-      <div id="chartwrap">
-        <canvas id="priceChart" aria-label="Price chart" role="img"></canvas>
-      </div>
-      <div class="legend">
-        <span><span class="dot" style="background:#16a34a"></span>Sehr niedrig</span>
-        <span><span class="dot" style="background:#4ade80"></span>Niedrig</span>
-        <span><span class="dot" style="background:#fbbf24"></span>Hoch</span>
-        <span><span class="dot" style="background:#ef4444"></span>Sehr hoch</span>
-      </div>
-    </div>
-  </div>
-
-  <script>
-
-# JavaScript printed with SINGLE-QUOTED heredoc to avoid Perl interpolation of ${...}
+# JavaScript printed with SINGLE-QUOTED heredoc to avoid Perl ${...} interpolation
 print <<'JS';
   (() => {
     const $ = (sel) => document.querySelector(sel);
@@ -210,6 +123,10 @@ print <<'JS';
     const btnFetch = $('#btnFetch');
     const canvas = document.getElementById('priceChart');
     const ctx = canvas.getContext('2d');
+
+    const next12Note  = $('#next12h-note');
+    const next12Table = $('#next12h-table');
+    const next12Body  = $('#next12h-body');
 
     let chart;
     let lastReport = null;
@@ -341,9 +258,44 @@ print <<'JS';
       c.update();
     }
 
+    function fillNext12Hours() {
+      if (!lastReport) return;
+
+      const now = Date.now();
+      const items = (Array.isArray(lastReport.hourly) ? lastReport.hourly : [])
+        .map(h => Object.assign({ _t: Date.parse(h.hour_start) }, h))
+        .filter(h => !isNaN(h._t) && h._t >= now)
+        .sort((a,b) => a._t - b._t)
+        .slice(0, 12);
+
+      if (items.length === 0) {
+        next12Note.textContent = 'No hourly data available. Click “Fetch now and draw”.';
+        next12Table.style.display = 'none';
+        return;
+      }
+
+      next12Body.innerHTML = '';
+      for (const h of items) {
+        const tr = document.createElement('tr');
+        const tdTime = document.createElement('td');
+        const tdCost = document.createElement('td');
+        const d = new Date(h.hour_start);
+        tdTime.textContent = isNaN(d)
+          ? h.hour_start
+          : d.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit', month: 'short', day: '2-digit' }).replace(',','');
+        tdCost.textContent = Number(h.avg_total_chf || 0).toFixed(4);
+        tdCost.className = 'cost';
+        tr.appendChild(tdTime);
+        tr.appendChild(tdCost);
+        next12Body.appendChild(tr);
+      }
+      next12Note.style.display = 'none';
+      next12Table.style.display = '';
+    }
+
     async function fetchBackendAndCompute() {
       setStatus('Fetching (backend)…');
-      // 1) Backend fetch
+      // 1) Backend fetch (saves latest and publishes computed values via backend flow)
       const r1 = await fetch('run_rolling_fetch.cgi', { cache: 'no-store' });
       if (!r1.ok) throw new Error('Fetch backend failed: HTTP ' + r1.status);
 
@@ -353,18 +305,20 @@ print <<'JS';
       if (!r2.ok) throw new Error('compute_costs failed: HTTP ' + r2.status);
       lastReport = await r2.json();
 
-      // 3) Ensure chart library, then render
+      // 3) Ensure chart lib, then render
       await ensureChartLib();
 
       setStatus('Rendering…');
       draw(document.getElementById('view').value);
+      fillNext12Hours();
 
       const ic = (lastReport && lastReport.interval_count_output) || 0;
       const hc = (lastReport && lastReport.hour_count_output) || 0;
       setStatus(`Ready. Intervals: ${ic}, hours: ${hc}.`);
     }
 
-    document.getElementById('btnFetch').addEventListener('click', async (e) => {
+    // Buttons / events
+    btnFetch.addEventListener('click', async (e) => {
       e.preventDefault();
       const btn = e.currentTarget;
       btn.disabled = true;
@@ -377,9 +331,23 @@ print <<'JS';
       }
     });
 
-    document.getElementById('view').addEventListener('change', (e) => {
-      draw(e.target.value);
-    });
+    viewSel.addEventListener('change', () => draw(viewSel.value));
+
+    // Initial load: draw whatever is already on disk
+    (async () => {
+      try {
+        setStatus('Loading computed costs…');
+        const r = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
+        if (!r.ok) throw new Error('compute_costs failed: HTTP ' + r.status);
+        lastReport = await r.json();
+        await ensureChartLib();
+        draw(viewSel.value);
+        fillNext12Hours();
+        setStatus('Ready.');
+      } catch (err) {
+        setStatus(err.message, true);
+      }
+    })();
   })();
 JS
 
