@@ -20,8 +20,8 @@ my $ICON_BASE  = "$BASEURL/Icons";
 # Use an HTML-escaped base URL for href attributes
 my $SAFE_BASEURL = CGI::escapeHTML($BASEURL);
 
-# HTML up to the <script> tag (variables interpolate here)
-print <<"HTML";
+# HTML head and body up to the <script> tag (interpolate variables)
+print <<"HTML_HEAD";
 <!doctype html>
 <html>
 <head>
@@ -88,10 +88,10 @@ print <<"HTML";
   </div>
 
   <script>
-JS
+HTML_HEAD
 
-# JavaScript printed with SINGLE-QUOTED heredoc to avoid Perl interpolation of ${...}
-print <<'JS';
+# Emit JS with a single-quoted heredoc
+print <<'JAVASCRIPT';
 (() => {
   const $ = (sel) => document.querySelector(sel);
   const status = $('#status');
@@ -107,7 +107,6 @@ print <<'JS';
     status.style.color = isError ? '#ef4444' : '#94a3b8';
   }
 
-  // Loader helpers (CDN-first, local fallback)
   function loadScript(src) {
     return new Promise((resolve, reject) => {
       const s = document.createElement('script');
@@ -139,7 +138,6 @@ print <<'JS';
     try { await loadScript(local); } catch (e) { console.error('Local adapter failed:', e.message); }
   }
 
-  // Color scale by quantiles
   function colorByQuantiles(values) {
     const vs = [...values].filter(v => Number.isFinite(v)).sort((a,b)=>a-b);
     const q = (p) => {
@@ -153,7 +151,6 @@ print <<'JS';
     return (v) => v <= q25 ? '#16a34a' : v <= q50 ? '#4ade80' : v <= q75 ? '#fbbf24' : '#ef4444';
   }
 
-  // Build points [{x: ISO, y: number}] for mode
   function pointsFromReport(mode) {
     if (!lastReport) return [];
     if (mode === 'hourly') {
@@ -177,7 +174,6 @@ print <<'JS';
     }).replace(',','');
   }
 
-  // Create/update chart; uses time axis if adapter is ready, else category fallback
   async function renderChart(mode) {
     await ensureChartLib();
     await ensureTimeAdapter();
@@ -187,7 +183,6 @@ print <<'JS';
     const colorFn = colorByQuantiles(points.map(p => p.y));
     const adapterReady = !!(window.Chart && Chart._adapters && Chart._adapters._date && Chart._adapters._date.parse);
 
-    // Destroy any existing chart instance to avoid "canvas in use"
     const existing = (window.Chart && Chart.getChart) ? Chart.getChart(document.getElementById('priceChart')) : null;
     if (existing) existing.destroy();
 
@@ -227,9 +222,7 @@ print <<'JS';
                 const ts = items?.[0]?.parsed?.x;
                 if (!ts) return '';
                 const d = new Date(ts);
-                return isNaN(d)
-                  ? String(ts)
-                  : d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', weekday: 'short', month: 'short', day: '2-digit' });
+                return isNaN(d) ? String(ts) : d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', weekday: 'short', month: 'short', day: '2-digit' });
               },
               label: (ctx) => ` Total: ${Number(ctx.parsed.y).toFixed(4)} CHF/kWh`
             }
@@ -296,7 +289,7 @@ print <<'JS';
     }
 
     setStatus('Rendering…');
-    await renderChart(document.getElementById('view').value);
+    await renderChart(viewSel.value);
 
     const ic = (lastReport && lastReport.interval_count_output) || 0;
     const hc = (lastReport && lastReport.hour_count_output) || 0;
@@ -318,12 +311,30 @@ print <<'JS';
 
   viewSel.addEventListener('change', () => renderChart(viewSel.value));
 
-  // Page does not auto-fetch; UI only computes from existing tariffs_latest.json
-})();
-JS
+  // Initial load: compute only (no fetch)
+  (async () => {
+    try {
+      setStatus('Loading computed costs…');
+      const r = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
+      if (!r.ok) throw new Error('compute_costs failed: HTTP ' + r.status);
+      lastReport = await r.json();
 
-print <<"HTML";
+      if (lastReport && lastReport.error) {
+        throw new Error('compute_costs error: ' + (lastReport.message || lastReport.error));
+      }
+
+      await renderChart(viewSel.value);
+      setStatus('Ready.');
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+  })();
+})();
+JAVASCRIPT
+
+# Tail HTML
+print <<"HTML_TAIL";
   </script>
 </body>
 </html>
-HTML
+HTML_TAIL
