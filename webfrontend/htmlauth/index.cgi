@@ -114,9 +114,9 @@ print <<"HTML";
   </div>
 
   <script>
-JS
+HTML
 
-# Use single-quoted heredoc to avoid Perl interpolation in JS template literals
+# JavaScript printed with SINGLE-QUOTED heredoc to avoid Perl interpolation of ${...}
 print <<'JS';
 (() => {
   const $ = (sel) => document.querySelector(sel);
@@ -404,7 +404,7 @@ print <<'JS';
         throw new Error('compute_costs error: ' + (lastReport.message || lastReport.error));
       }
 
-      await renderChart(viewSel.value);
+      await renderChart(document.getElementById('view').value);
       fillNext24Hours();
       setStatus('Ready.');
     } catch (err) {
