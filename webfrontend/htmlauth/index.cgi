@@ -30,7 +30,7 @@ print <<"HTML";
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
   <link rel="stylesheet" href="$BASEURL/style.css">
-  <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251219">
+  <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251220">
   <style>
     #chartwrap { position: relative; width: 100%; min-height: 340px; }
     canvas { max-height: 520px; }
@@ -114,7 +114,7 @@ print <<"HTML";
   </div>
 
   <script>
-HTML
+JS
 
 # Use single-quoted heredoc to avoid Perl interpolation in JS template literals
 print <<'JS';
@@ -392,7 +392,7 @@ print <<'JS';
 
   viewSel.addEventListener('change', () => renderChart(viewSel.value));
 
-  /// Initial load: compute only (no fetch) so the page does NOT trigger a download
+  // Initial load: compute only (no fetch) so the page does NOT trigger a download
   (async () => {
     try {
       setStatus('Loading computed costs…');
@@ -404,7 +404,7 @@ print <<'JS';
         throw new Error('compute_costs error: ' + (lastReport.message || lastReport.error));
       }
 
-      await renderChart(document.getElementById('view').value);
+      await renderChart(viewSel.value);
       fillNext24Hours();
       setStatus('Ready.');
     } catch (err) {
