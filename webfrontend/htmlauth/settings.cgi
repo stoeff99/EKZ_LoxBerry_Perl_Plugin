@@ -97,7 +97,7 @@ print <<"HTML";
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
   <link rel="stylesheet" href="$BASEURL/style.css">
-  <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251217">
+  <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251220">
 </head>
 <body id="ekz-plugin" class="plugincontent">
   <div class="app-header">
