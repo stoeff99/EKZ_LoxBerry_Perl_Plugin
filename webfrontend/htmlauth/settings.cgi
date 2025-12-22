@@ -88,7 +88,7 @@ if ($q->request_method eq 'POST') {
 }
 
 # Render page using shared styles (same look as index.cgi)
-print <<"HTML";
+print <<"HTML_HEAD";
 <!doctype html>
 <html>
 <head>
@@ -200,10 +200,10 @@ print <<"HTML";
   </div>
 </body>
 </html>
-HTML
+HTML_HEAD
 
 # ----------------------------
-# Cron updater (hour-based schedules for reliability)
+# Cron updater (kept as in your file)
 # ----------------------------
 sub update_cron_schedule {
   my ($schedule) = @_;
