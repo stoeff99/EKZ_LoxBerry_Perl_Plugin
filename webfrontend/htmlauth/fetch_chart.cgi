@@ -17,6 +17,9 @@ my $BASEURL = do {
 my $ASSET_BASE = "$BASEURL/assets";
 my $ICON_BASE  = "$BASEURL/Icons";
 
+# Use an HTML-escaped base URL for href attributes
+my $SAFE_BASEURL = CGI::escapeHTML($BASEURL);
+
 # HTML up to the <script> tag (variables interpolate here)
 print <<"HTML";
 <!doctype html>
@@ -27,7 +30,7 @@ print <<"HTML";
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
   <link rel="stylesheet" href="$BASEURL/style.css">
-  <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251219">
+  <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251220">
   <style>
     #chartwrap { position: relative; width: 100%; min-height: 340px; }
     canvas { max-height: 520px; }
@@ -55,9 +58,9 @@ print <<"HTML";
   </div>
 
   <div class="nav-actions">
-    <a class="btn btn-green"   href="@{[ h($BASEURL) ]}/run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now</a>
-    <a class="btn btn-primary" href="$BASEURL/index.cgi"><span class="emoji">🏠</span> Home</a>
-    <a class="btn btn-primary"   href="@{[ h($BASEURL) ]}/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
+    <a class="btn btn-green"   href="$SAFE_BASEURL/run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now</a>
+    <a class="btn btn-primary" href="$SAFE_BASEURL/index.cgi"><span class="emoji">🏠</span> Home</a>
+    <a class="btn btn-primary" href="$SAFE_BASEURL/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
   </div>
 
   <div class="container">
@@ -85,7 +88,7 @@ print <<"HTML";
   </div>
 
   <script>
-HTML
+JS
 
 # JavaScript printed with SINGLE-QUOTED heredoc to avoid Perl interpolation of ${...}
 print <<'JS';
@@ -315,19 +318,7 @@ print <<'JS';
 
   viewSel.addEventListener('change', () => renderChart(viewSel.value));
 
-  // Initial load: compute only (no fetch) so this page does NOT trigger a download
-  (async () => {
-    try {
-      setStatus('Loading computed costs…');
-      const r = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
-      if (!r.ok) throw new Error('compute_costs failed: HTTP ' + r.status);
-      lastReport = await r.json();
-      await renderChart(viewSel.value);
-      setStatus('Ready.');
-    } catch (err) {
-      setStatus(err.message, true);
-    }
-
+  // Optional: auto-load commented out to avoid accidental fetches
 })();
 JS
 
