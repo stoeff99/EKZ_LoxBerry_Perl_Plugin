@@ -40,7 +40,7 @@ print <<"HTML";
     select { padding:.35rem .6rem; border-radius:8px; border:1px solid rgba(255,255,255,.15); background:#0b1220; color:#e5e7eb }
     .status { margin:.4rem 0 .3rem 0; font-size:.9rem }
 
-    /* Next 12 hours table */
+    /* Next 24 hours table */
     .costs-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
     .costs-table th, .costs-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
     .costs-table th { text-align: left; color: #9fb0c9; font-weight: 700; }
@@ -91,21 +91,21 @@ print <<"HTML";
       </div>
     </div>
 
-    <!-- Next 12 hours table -->
-    <div class="card" id="next12h-card">
+    <!-- Next 24 hours table -->
+    <div class="card" id="next24h-card">
       <div style="display:flex;align-items:baseline;gap:10px;">
-        <h3 style="margin:0;">Next 12 hours</h3>
+        <h3 style="margin:0;">Next 24 hours</h3>
         <span class="small muted">Hourly average = mean of four 15‑min intervals</span>
       </div>
-      <div id="next12h-note" class="small muted" style="margin-top:6px;">Reading computed costs…</div>
-      <table class="costs-table" id="next12h-table" style="display:none;">
+      <div id="next24h-note" class="small muted" style="margin-top:6px;">Reading computed costs…</div>
+      <table class="costs-table" id="next24h-table" style="display:none;">
         <thead>
           <tr>
             <th scope="col">Hour (local)</th>
             <th scope="col" class="cost">Avg total (CHF)</th>
           </tr>
         </thead>
-        <tbody id="next12h-body"></tbody>
+        <tbody id="next24h-body"></tbody>
       </table>
     </div>
   </div>
@@ -122,9 +122,9 @@ print <<'JS';
   const btnFetch = $('#btnFetch');
   const ctx = document.getElementById('priceChart').getContext('2d');
 
-  const next12Note  = $('#next12h-note');
-  const next12Table = $('#next12h-table');
-  const next12Body  = $('#next12h-body');
+  const next24Note  = $('#next24h-note');
+  const next24Table = $('#next24h-table');
+  const next24Body  = $('#next24h-body');
 
   let chart;
   let lastReport = null;
@@ -316,7 +316,7 @@ print <<'JS';
     chart = new Chart(ctx, { data, options });
   }
 
-  function fillNext12Hours() {
+  function fillNext24Hours() {
     if (!lastReport) return;
 
     const now = Date.now();
@@ -324,15 +324,15 @@ print <<'JS';
       .map(h => Object.assign({ _t: Date.parse(h.hour_start) }, h))
       .filter(h => !isNaN(h._t) && h._t >= now)
       .sort((a,b) => a._t - b._t)
-      .slice(0, 12);
+      .slice(0, 24);
 
     if (items.length === 0) {
-      next12Note.textContent = 'No hourly data available. Click “Fetch now and draw”.';
-      next12Table.style.display = 'none';
+      next24Note.textContent = 'No hourly data available. Click “Fetch now and draw”.';
+      next24Table.style.display = 'none';
       return;
     }
 
-    next12Body.innerHTML = '';
+    next24Body.innerHTML = '';
     for (const h of items) {
       const tr = document.createElement('tr');
       const tdTime = document.createElement('td');
@@ -345,10 +345,10 @@ print <<'JS';
       tdCost.className = 'cost';
       tr.appendChild(tdTime);
       tr.appendChild(tdCost);
-      next12Body.appendChild(tr);
+      next24Body.appendChild(tr);
     }
-    next12Note.style.display = 'none';
-    next12Table.style.display = '';
+    next24Note.style.display = 'none';
+    next24Table.style.display = '';
   }
 
   async function fetchBackendAndCompute() {
@@ -367,7 +367,7 @@ print <<'JS';
 
     setStatus('Rendering…');
     await renderChart(document.getElementById('view').value);
-    fillNext12Hours();
+    fillNext24Hours();
 
     const ic = (lastReport && lastReport.interval_count_output) || 0;
     const hc = (lastReport && lastReport.hour_count_output) || 0;
@@ -407,7 +407,7 @@ print <<'JS';
 
       setStatus('Rendering…');
       await renderChart(document.getElementById('view').value);
-      fillNext12Hours();
+      fillNext24Hours();
       setStatus('Ready.');
     } catch (err) {
       setStatus(err.message, true);
