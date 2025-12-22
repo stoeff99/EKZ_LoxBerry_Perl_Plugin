@@ -107,11 +107,11 @@ print <<"HTML_HEAD";
   </div>
 
   <div class="nav-actions">
-    <a class="btn btn-primary" href="@{[ h($BASEURL) ]}/start.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
-    <a class="btn btn-green"   href="@{[ h($BASEURL) ]}/run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now</a>
-    <a class="btn btn-slate"  href="@{[ h($BASEURL) ]}/health.cgi"><span class="emoji">🩺</span> Health</a>
-    <a class="btn btn-primary" href="$BASEURL/index.cgi"><span class="emoji">🏠</span> Home</a>
-    <a class="btn btn-primary"   href="@{[ h($BASEURL) ]}/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
+    <a class="btn btn-primary" href="$SAFE_BASEURL/start.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
+    <a class="btn btn-green"   href="$SAFE_BASEURL/run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now</a>
+    <a class="btn btn-slate"   hhref="$SAFE_BASEURL/health.cgi"><span class="emoji">🩺</span> Health</a>
+    <a class="btn btn-primary" href="$SAFE_BASEURL/index.cgi"><span class="emoji">🏠</span> Home</a>
+    <a class="btn btn-primary" href="$SAFE_BASEURL/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
   </div>
 
   <div class="container">
@@ -193,7 +193,7 @@ print <<"HTML_HEAD";
         <div class="hr"></div>
         <div class="actions">
           <button type="submit">Save</button>
-          <a href="@{[ h($BASEURL) ]}/index.cgi"><button class="btn-secondary" type="button">Back</button></a>
+          <a href="$SAFE_BASEURL/index.cgi"><button class="btn-secondary" type="button">Back</button></a>
         </div>
       </form>
     </div>
