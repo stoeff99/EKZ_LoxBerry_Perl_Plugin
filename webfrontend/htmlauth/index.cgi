@@ -392,23 +392,18 @@ print <<'JS';
 
   viewSel.addEventListener('change', () => renderChart(viewSel.value));
 
-  // Initial load: fetch + compute + render
+  /// Initial load: compute only (no fetch) so the page does NOT trigger a download
   (async () => {
     try {
-      setStatus('Fetching (backend)…');
-      const r1 = await fetch('run_rolling_fetch.cgi', { cache: 'no-store' });
-      if (!r1.ok) throw new Error('Fetch backend failed: HTTP ' + r1.status);
-
-      setStatus('Computing costs for UI…');
-      const r2 = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
-      if (!r2.ok) throw new Error('compute_costs failed: HTTP ' + r2.status);
-      lastReport = await r2.json();
+      setStatus('Loading computed costs…');
+      const r = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
+      if (!r.ok) throw new Error('compute_costs failed: HTTP ' + r.status);
+      lastReport = await r.json();
 
       if (lastReport && lastReport.error) {
         throw new Error('compute_costs error: ' + (lastReport.message || lastReport.error));
       }
 
-      setStatus('Rendering…');
       await renderChart(document.getElementById('view').value);
       fillNext24Hours();
       setStatus('Ready.');
