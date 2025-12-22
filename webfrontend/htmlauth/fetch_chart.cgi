@@ -314,6 +314,20 @@ print <<'JS';
   });
 
   viewSel.addEventListener('change', () => renderChart(viewSel.value));
+
+  // Initial load: compute only (no fetch) so this page does NOT trigger a download
+  (async () => {
+    try {
+      setStatus('Loading computed costs…');
+      const r = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
+      if (!r.ok) throw new Error('compute_costs failed: HTTP ' + r.status);
+      lastReport = await r.json();
+      await renderChart(viewSel.value);
+      setStatus('Ready.');
+    } catch (err) {
+      setStatus(err.message, true);
+    }
+
 })();
 JS
 
