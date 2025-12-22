@@ -318,7 +318,7 @@ print <<'JS';
 
   viewSel.addEventListener('change', () => renderChart(viewSel.value));
 
-  // Optional: auto-load commented out to avoid accidental fetches
+  // Page does not auto-fetch; UI only computes from existing tariffs_latest.json
 })();
 JS
 
