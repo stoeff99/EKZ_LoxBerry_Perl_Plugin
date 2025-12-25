@@ -342,14 +342,18 @@ BASH
     return 0;
   };
 
-  # Manage compute wrapper (create under cron.hourly if publish_relative is enabled,
-  # otherwise remove compute wrappers from all cron dirs)
-  my $compute_wrapper_path = "$lbhomedir/system/cron/cron.hourly/$compute_wrapper_name";
+  # We'll place the compute wrapper into cron.01min so we can run it once per hour at minute :59.
+  my $compute_wrapper_path = "$lbhomedir/system/cron/cron.01min/$compute_wrapper_name";
   if ($publish_relative) {
+    # The wrapper runs every minute (cron.01min). It checks the current minute and only runs
+    # compute_costs.cgi when minute == 59 so the relative payload represents the price "now" at :59.
     my $compute_content = <<"BASH";
 #!/bin/bash
-# Wrapper to run compute_costs.cgi hourly to republish relative +0..+23 topic
-$compute_cmd
+# Run compute_costs.cgi only at minute 59 past the hour
+MIN=\$(date +\\%M)
+if [ "\$MIN" = "59" ]; then
+  $compute_cmd
+fi
 BASH
     eval {
       open my $cfh, '>', $compute_wrapper_path or die "Cannot write $compute_wrapper_path: $!";
