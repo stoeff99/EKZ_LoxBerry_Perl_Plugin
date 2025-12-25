@@ -276,7 +276,7 @@ print <<'JAVASCRIPT';
 
   async function fetchBackendAndCompute() {
     setStatus('Fetching (backend)…');
-    const r1 = await fetch('run_rolling_fetch.cgi', { cache: 'no-store' });
+    const r1 = await fetch('run_rolling_fetch.cgi?force=1', { cache: 'no-store' });
     if (!r1.ok) throw new Error('Fetch backend failed: HTTP ' + r1.status);
 
     setStatus('Computing costs for UI…');
