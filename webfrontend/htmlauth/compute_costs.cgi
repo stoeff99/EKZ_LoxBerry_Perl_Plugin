@@ -280,15 +280,13 @@ my $topic_hourly    = $cfg->{mqtt_topic_hourly}
 my $topic_relative  = $cfg->{mqtt_topic_relative} // 'ekz/ems/tariffs/relative';
 
 my ($pub_intervals_ok, $pub_hourly_ok) = (0, 0);
+my $pub_relative_ok = 0;
 if (!$nopublish) {
   $pub_intervals_ok = mqtt_publish($cfg, $topic_intervals, $json_intervals) ? 1 : 0;
   $pub_hourly_ok    = mqtt_publish($cfg, $topic_hourly,    $json_hourly)    ? 1 : 0;
 
   # Publish relative 24-hour view as well
-  my $pub_relative_ok = mqtt_publish($cfg, $topic_relative, $json_relative) ? 1 : 0;
-  # Make publish flag available below by localizing a variable the output block can read
-  $out->{''} = '' if 0; # no-op to avoid warnings earlier; we'll set in $out below
-
+  $pub_relative_ok = mqtt_publish($cfg, $topic_relative, $json_relative) ? 1 : 0;
 }
 
 my $out = {
@@ -307,7 +305,7 @@ my $out = {
     publish_hourly_ok        => $pub_hourly_ok    ? JSON::PP::true : JSON::PP::false,
     skipped_due_to_nopublish => $nopublish ? JSON::PP::true : JSON::PP::false,
     relative_topic           => $topic_relative,
-    publish_relative_ok      => (defined $pub_relative_ok && $pub_relative_ok) ? JSON::PP::true : JSON::PP::false,
+    publish_relative_ok      => $pub_relative_ok ? JSON::PP::true : JSON::PP::false,
   },
 };
 
