@@ -136,18 +136,23 @@ my $ok = eval {
   my $last_file = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
 
   if (!$force) {
-    # If there is a last successful fetch today, skip
-    if (-f $last_file) {
-      if (open my $lf, '<', $last_file) {
-        local $/ = undef;
-        my $raw = <$lf>;
-        close $lf;
-        my $j = eval { decode_json($raw) } || {};
-        my $last_ts = $j->{last_success_epoch};
-        if (defined $last_ts && same_calendar_day(time, $last_ts)) {
-          LOGINF("Skipped fetch: already fetched today (last_success_epoch=$last_ts)");
-          print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'already_fetched_today' });
-          return 1;
+    # Only apply the "already fetched today" guard for strictly once-per-day schedules.
+    # For other schedules (2, 12, 24) we rely on the hour-of-day check below.
+    if (($schedule // '') eq '1') {
+      if (-f $last_file) {
+        if (open my $lf, '<', $last_file) {
+          local $/ = undef;
+          my $raw = <$lf>;
+          close $lf;
+          my $j = eval { decode_json($raw) } || {};
+          my $last_ts = $j->{last_success_epoch};
+          if (defined $last_ts && same_calendar_day(time, $last_ts)) {
+            LOGINF("Skipped fetch: already fetched today (once-per-day schedule; last_success_epoch=%d)", $last_ts);
+            print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'already_fetched_today' });
+            return 1;
+          }
+        } else {
+          LOGWARN("Could not open last_fetch file '%s' for reading: %s", $last_file, $!);
         }
       }
     }
