@@ -132,11 +132,11 @@ sub mqtt_publish {
   if (!$ok) {
     # fallback to mosquitto_pub CLI (keeps existing behaviour for auth/compat)
     my $tmp = File::Spec->catfile($lbpdatadir, 'mqtt_payload.tmp.json');
-    if (!open my $tf, '>', $tmp) {
+    if (!open my $tfh, '>', $tmp) {
       return 0;
     }
-    print $tf $payload_json;
-    close $tf;
+    print $tfh $payload_json;
+    close $tfh;
 
     my @cmd = ('mosquitto_pub', '-h', $host, '-p', $port, '-t', $topic, '-f', $tmp, '-r');
     if (defined $user && $user ne '') { push @cmd, ('-u', $user); }
