@@ -6,6 +6,7 @@ use CGI;
 use JSON::PP;
 use File::Spec;
 use Time::Local;
+use POSIX qw(strftime);
 use FindBin;
 use LoxBerry::System;
 require "$FindBin::Bin/common.pl";
@@ -228,6 +229,47 @@ my $hourly_msg = {
 my $json_intervals = JSON::PP->new->canonical(1)->encode($intervals_msg);
 my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
 
+# --------------------------
+# Relative 24-hour view (now +0 .. now +23)
+# --------------------------
+# Build a map by prefix YYYY-MM-DDTHH => hourly entry for quick lookup
+my %hour_prefix_map;
+for my $h (@hourly) {
+  next unless ref $h eq 'HASH' && defined $h->{hour_start};
+  my $hk = $h->{hour_start};
+  my $prefix = substr($hk, 0, 13);  # "YYYY-MM-DDTHH"
+  $hour_prefix_map{$prefix} = $h unless exists $hour_prefix_map{$prefix};
+}
+
+my @relative;
+for my $off (0..23) {
+  my $t = time + $off * 3600;
+  my $prefix = strftime('%Y-%m-%dT%H', localtime($t));
+  my $entry = $hour_prefix_map{$prefix};
+  my $hs;
+  my $val;
+  if ($entry) {
+    $hs  = $entry->{hour_start};
+    $val = defined $entry->{avg_total_chf} ? ($entry->{avg_total_chf} + 0) : undef;
+  } else {
+    # fallback hour_start (no timezone offset appended)
+    $hs  = strftime('%Y-%m-%dT%H:00:00', localtime($t));
+    $val = undef;
+  }
+  push @relative, {
+    offset => $off,
+    hour_start => $hs,
+    avg_total_chf => $val,
+  };
+}
+
+my $relative_msg = {
+  publication_timestamp => $pub_ts,
+  reference_time        => strftime('%Y-%m-%dT%H:%M:%S', localtime(time)),
+  relative              => \@relative,
+};
+my $json_relative = JSON::PP->new->canonical(1)->encode($relative_msg);
+
 # Topics (new dedicated, with backward-compatible fallback)
 my $topic_intervals = $cfg->{mqtt_topic_intervals}
                    // $cfg->{mqtt_topic_raw}
@@ -235,11 +277,18 @@ my $topic_intervals = $cfg->{mqtt_topic_intervals}
 my $topic_hourly    = $cfg->{mqtt_topic_hourly}
                    // $cfg->{mqtt_topic_summary}
                    // 'ekz/ems/tariffs/hourly';
+my $topic_relative  = $cfg->{mqtt_topic_relative} // 'ekz/ems/tariffs/relative';
 
 my ($pub_intervals_ok, $pub_hourly_ok) = (0, 0);
 if (!$nopublish) {
   $pub_intervals_ok = mqtt_publish($cfg, $topic_intervals, $json_intervals) ? 1 : 0;
   $pub_hourly_ok    = mqtt_publish($cfg, $topic_hourly,    $json_hourly)    ? 1 : 0;
+
+  # Publish relative 24-hour view as well
+  my $pub_relative_ok = mqtt_publish($cfg, $topic_relative, $json_relative) ? 1 : 0;
+  # Make publish flag available below by localizing a variable the output block can read
+  $out->{''} = '' if 0; # no-op to avoid warnings earlier; we'll set in $out below
+
 }
 
 my $out = {
@@ -257,6 +306,8 @@ my $out = {
     publish_intervals_ok     => $pub_intervals_ok ? JSON::PP::true : JSON::PP::false,
     publish_hourly_ok        => $pub_hourly_ok    ? JSON::PP::true : JSON::PP::false,
     skipped_due_to_nopublish => $nopublish ? JSON::PP::true : JSON::PP::false,
+    relative_topic           => $topic_relative,
+    publish_relative_ok      => (defined $pub_relative_ok && $pub_relative_ok) ? JSON::PP::true : JSON::PP::false,
   },
 };
 
