@@ -20,6 +20,9 @@ my $BASEURL    = $lbpurl || do { (my $p = $ENV{SCRIPT_NAME}//'') =~ s{/[^/]+$}{}
 my $ASSET_BASE = "$BASEURL/assets";
 my $ICON_BASE  = "$BASEURL/Icons";
 
+# Safe escaped base for href attributes
+my $SAFE_BASEURL = CGI::escapeHTML($BASEURL);
+
 # Load shared helpers from common.pl (provides load_cfg())
 require "$FindBin::Bin/common.pl";
 
@@ -109,7 +112,7 @@ print <<"HTML_HEAD";
   <div class="nav-actions">
     <a class="btn btn-primary" href="$SAFE_BASEURL/start.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
     <a class="btn btn-green"   href="$SAFE_BASEURL/run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now</a>
-    <a class="btn btn-slate"   hhref="$SAFE_BASEURL/health.cgi"><span class="emoji">🩺</span> Health</a>
+    <a class="btn btn-slate"   href="$SAFE_BASEURL/health.cgi"><span class="emoji">🩺</span> Health</a>
     <a class="btn btn-primary" href="$SAFE_BASEURL/index.cgi"><span class="emoji">🏠</span> Home</a>
     <a class="btn btn-primary" href="$SAFE_BASEURL/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
   </div>
