@@ -102,7 +102,7 @@ sub monthly_M_total_for_block {
   }
 }
 
-# MQTT publish with mosquitto_pub fallback
+# MQTT publish: prefer Net::MQTT::Simple when possible; otherwise use mosquitto_pub
 sub mqtt_publish {
   my ($cfg, $topic, $payload_json) = @_;
   return 0 unless $cfg->{mqtt_enabled};
@@ -112,18 +112,42 @@ sub mqtt_publish {
   my $user = $cfg->{mqtt_username} // '';
   my $pass = $cfg->{mqtt_password} // '';
 
-  my $tmp = File::Spec->catfile($lbpdatadir, 'mqtt_payload.tmp.json');
-  open my $tf, '>', $tmp or return 0;
-  print $tf $payload_json;
-  close $tf;
+  # Try Perl MQTT library if available and no auth required
+  my $ok = 0;
+  if ($user eq '') {
+    eval {
+      require Net::MQTT::Simple;
+      Net::MQTT::Simple->import();
+      my $broker = "$host:$port";
+      my $mqtt = Net::MQTT::Simple->new($broker);
+      $mqtt->publish($topic => $payload_json);
+      $ok = 1;
+      1;
+    } or do {
+      # library not present or publish failed — fallback to mosquitto_pub below
+      $ok = 0;
+    };
+  }
 
-  my @cmd = ('mosquitto_pub', '-h', $host, '-p', $port, '-t', $topic, '-f', $tmp, '-r');
-  if (defined $user && $user ne '') { push @cmd, ('-u', $user); }
-  if (defined $pass && $pass ne '') { push @cmd, ('-P', $pass); }
+  if (!$ok) {
+    # fallback to mosquitto_pub CLI (keeps existing behaviour for auth/compat)
+    my $tmp = File::Spec->catfile($lbpdatadir, 'mqtt_payload.tmp.json');
+    if (!open my $tf, '>', $tmp) {
+      return 0;
+    }
+    print $tf $payload_json;
+    close $tf;
 
-  my $rc = system(@cmd);
-  unlink $tmp;
-  return $rc == 0 ? 1 : 0;
+    my @cmd = ('mosquitto_pub', '-h', $host, '-p', $port, '-t', $topic, '-f', $tmp, '-r');
+    if (defined $user && $user ne '') { push @cmd, ('-u', $user); }
+    if (defined $pass && $pass ne '') { push @cmd, ('-P', $pass); }
+
+    my $rc = system(@cmd);
+    unlink $tmp;
+    $ok = ($rc == 0) ? 1 : 0;
+  }
+
+  return $ok ? 1 : 0;
 }
 
 # ---- main ----
