@@ -113,9 +113,70 @@ sub write_json_file {
 }
 # --------------------------------------
 
+# Helper: calendar-day equality (localtime)
+sub same_calendar_day {
+  my ($t1, $t2) = @_;
+  return 0 unless defined $t1 && defined $t2;
+  my @a = localtime($t1);
+  my @b = localtime($t2);
+  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]); # year, month, mday
+}
+
 my $ok = eval {
   my $cfg = load_cfg();
 
+  # allow force via query param: run_rolling_fetch.cgi?force=1 will bypass schedule checks
+  my $force = ($q->param('force') // '') eq '1' ? 1 : 0;
+
+  # Enforce schedule guard BEFORE performing any fetching to avoid accidental downloads.
+  # Read configured schedule (values: '1','2','12','24') - default to '1' (18:00) if unset.
+  my $schedule = $cfg->{fetch_schedule} // '1';
+
+  # Path to record last successful fetch
+  my $last_file = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
+
+  if (!$force) {
+    # If there is a last successful fetch today, skip
+    if (-f $last_file) {
+      if (open my $lf, '<', $last_file) {
+        local $/ = undef;
+        my $raw = <$lf>;
+        close $lf;
+        my $j = eval { decode_json($raw) } || {};
+        my $last_ts = $j->{last_success_epoch};
+        if (defined $last_ts && same_calendar_day(time, $last_ts)) {
+          LOGINF("Skipped fetch: already fetched today (last_success_epoch=$last_ts)");
+          print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'already_fetched_today' });
+          return 1;
+        }
+      }
+    }
+
+    # Ensure current local hour matches configured schedule
+    my $hour = (localtime(time))[2]; # 0..23
+    my $allowed = 0;
+    if ($schedule eq '1') {
+      $allowed = ($hour == 18) ? 1 : 0;
+    } elsif ($schedule eq '2') {
+      $allowed = ($hour == 6 || $hour == 18) ? 1 : 0;
+    } elsif ($schedule eq '12') {
+      $allowed = ($hour % 2 == 0) ? 1 : 0; # even hours
+    } elsif ($schedule eq '24') {
+      $allowed = 1; # any hour
+    } else {
+      $allowed = 0; # unknown/disabled
+    }
+
+    unless ($allowed) {
+      LOGINF("Skipped fetch: not scheduled now (hour=$hour schedule=$schedule)");
+      print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_scheduled_now', hour => $hour, schedule => $schedule });
+      return 1;
+    }
+  } else {
+    LOGINF("Force fetch requested via ?force=1");
+  }
+
+  # ---- existing link / auth checks ----
   my ($link_status, $link_url) = try_ensure_linked($cfg);
   if ($link_status eq 'not_signed_in') {
     print encode_json({ error => 'not_signed_in', message => 'User not signed in. Please sign in via the plugin UI.' });
@@ -135,6 +196,7 @@ my $ok = eval {
     return 1;
   }
 
+  # Build window and fetch data from EMS
   my ($start_iso, $end_iso) = build_scheduled_window();
 
   my $access = ensure_access_token($cfg);
@@ -159,6 +221,18 @@ my $ok = eval {
   my $latest = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
   write_json_file($latest, $norm);
 
+  # Record last successful fetch (epoch) so next runs on same calendar day can be skipped
+  eval {
+    my $last = { last_success_epoch => time() };
+    my $lfh = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
+    if (open my $fh, '>', $lfh) {
+      print $fh JSON::PP->new->canonical(1)->encode($last);
+      close $fh;
+      chmod 0640, $lfh;
+    }
+    1;
+  };
+
   # Optional: calendar-day file based on first interval
   if (@{ $norm->{prices} // [] }) {
     my $day = substr($norm->{prices}[0]{start_timestamp} // '', 0, 10);
@@ -171,9 +245,10 @@ my $ok = eval {
   # Publish using raw payload (leave as-is). If you need normalized, call publish with $norm.
   eval { publish_tariffs_to_mqtt($cfg, $payload, $source, $start_iso, $end_iso); 1 };
 
-  # NEW: Trigger computed publishes (intervals + hourly) via compute_costs.cgi (without nopublish)
+  # Trigger computed publishes (intervals + hourly) via compute_costs.cgi (without nopublish)
   eval {
     my $compute = File::Spec->catfile($FindBin::Bin, 'compute_costs.cgi');
+    # run compute_costs CGI directly to publish computed topics (no 'nopublish')
     my $out = qx{/usr/bin/perl $compute};
     LOGINF("compute_costs.cgi invoked to publish intervals/hourly.");
     1;
