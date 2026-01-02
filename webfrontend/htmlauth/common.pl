@@ -8,7 +8,6 @@ use JSON::PP;
 use LWP::UserAgent;
 use HTTP::Request::Common qw(POST);
 use Time::Piece;
-use Time::Local qw(timegm);
 use File::Spec;
 use File::Path qw(make_path);
 use FindBin;
@@ -52,42 +51,34 @@ sub _lb_log {
 }
 
 # --------------------------
-# Unit normalization shared helper
+# Defaults helper
 # --------------------------
-sub _norm_unit_name {
-  my ($u) = @_;
-  return 'CHF_kWh' if defined $u && lc($u) eq 'chf_kwh';
-  return 'CHF_M'   if defined $u && lc($u) eq 'chf_m';
-  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]?kwh$/;
-  return 'CHF_M'   if defined $u && lc($u) =~ /^chf[_-]?m$/;
-  return $u // 'CHF_kWh';
-}
+sub _default_cfg {
+  return {
+    auth_server_base      => '',
+    realm                 => '',
+    client_id             => '',
+    client_secret         => '',
+    redirect_uri          => ($BASEURL ? "$BASEURL/callback.cgi" : ''),
+    api_base              => 'https://api.tariffs.ekz.ch/v1',
+    ems_instance_id       => '',
+    scope                 => 'openid offline_access ems',
+    response_mode         => 'query',
+    timezone              => 'Europe/Zurich',
+    fallback_tariff_name  => 'integrated_400D',
+    retries               => 3,
+    token_store_path      => File::Spec->catfile($LBPDATADIR || '/opt/loxberry/data/plugins/ekz_plugin', 'tokens.json'),
 
-# Sum CHF_kWh for one block (prefer electricity+grid+regional; else integrated+regional)
-sub _block_chf_kwh_total {
-  my ($b) = @_;
-  return 0 unless defined $b && ref($b) eq 'HASH';
-  my ($e_kwh, $g_kwh, $r_kwh, $i_kwh) = (0,0,0,0);
-  for my $arr_name (qw/electricity grid regional_fees integrated/) {
-    my $arr = $b->{$arr_name};
-    next unless $arr && ref($arr) eq 'ARRAY';
-    for my $e (@$arr) {
-      next unless ref($e) eq 'HASH';
-      my $unit = _norm_unit_name($e->{unit});
-      next unless $unit eq 'CHF_kWh';
-      my $val = $e->{value};
-      $val = 0 unless defined $val;
-      if ($arr_name eq 'electricity') { $e_kwh = $val + 0; }
-      elsif ($arr_name eq 'grid')     { $g_kwh = $val + 0; }
-      elsif ($arr_name eq 'regional_fees') { $r_kwh = $val + 0; }
-      elsif ($arr_name eq 'integrated')    { $i_kwh = $val + 0; }
-    }
-  }
-  if ($e_kwh || $g_kwh) {
-    return $e_kwh + $g_kwh + $r_kwh;
-  } else {
-    return $i_kwh + $r_kwh;
-  }
+    mqtt_enabled          => JSON::PP::true,
+    mqtt_host             => 'localhost',
+    mqtt_port             => 1883,
+    mqtt_username         => '',
+    mqtt_password         => '',
+    mqtt_topic_raw        => 'ekz/ems/tariffs/raw',
+    mqtt_topic_summary    => 'ekz/ems/tariffs/now_plus_24h',
+    mqtt_topic_intervals  => 'ekz/ems/tariffs/intervals',
+    mqtt_topic_hourly     => 'ekz/ems/tariffs/hourly',
+  };
 }
 
 # --------------------------
@@ -95,18 +86,26 @@ sub _block_chf_kwh_total {
 # --------------------------
 sub _read_json_file {
   my ($path) = @_;
-  open my $fh, '<', $path or die "Cannot read $path: $!";
+  my $raw;
+  if (!open my $fh, '<', $path) {
+    _lb_log('ERR', "Cannot read $path: $!");
+    return undef;
+  }
   local $/ = undef;
-  my $raw = <$fh>;
+  $raw = <$fh>;
   close $fh;
-  my $data = decode_json($raw);
-  die "Invalid JSON in $path" unless ref $data eq 'HASH';
+
+  my $data = eval { decode_json($raw) };
+  if (!$data || ref $data ne 'HASH') {
+    _lb_log('ERR', "Invalid JSON in $path; using defaults");
+    return undef;
+  }
   return $data;
 }
 
 sub _shipped_default_cfg_path {
-  # common.pl is in webfrontend/htmlauth; shipped defaults are at ../../config/ekz_config.json
-  return File::Spec->catfile($FindBin::Bin, '../../config/ekz_config.json');
+  # common.pl is in webfrontend/htmlauth; shipped defaults are at ../../files/config/ekz_config.json
+  return File::Spec->catfile($FindBin::Bin, '../../files/config/ekz_config.json');
 }
 
 sub load_cfg {
@@ -115,10 +114,16 @@ sub load_cfg {
 
   if (-f $runtime) {
     $cfg = _read_json_file($runtime);
-  } else {
+  }
+
+  if (!defined $cfg) {
     my $shipped = _shipped_default_cfg_path();
-    die "Default config not found: $shipped" unless -f $shipped;
-    $cfg = _read_json_file($shipped);
+    if (-f $shipped) {
+      $cfg = _read_json_file($shipped);
+    } else {
+      _lb_log('ERR', "Default config not found at $shipped; using built-in defaults");
+      $cfg = _default_cfg();
+    }
   }
 
   # Minimal runtime fallback: compute redirect_uri if missing
@@ -126,16 +131,30 @@ sub load_cfg {
     $cfg->{redirect_uri} = ($BASEURL ? "$BASEURL/callback.cgi" : '');
   }
 
-  # Validate required keys exist in JSON (soft defaults to avoid 500s)
-  $cfg->{auth_server_base} ||= '';
-  $cfg->{realm}            ||= '';
-  $cfg->{client_id}        ||= '';
-  $cfg->{client_secret}    ||= '';
-  $cfg->{api_base}         ||= 'https://api.tariffs.ekz.ch/v1';
-  $cfg->{ems_instance_id}  ||= '';
-  $cfg->{scope}            ||= 'openid offline_access ems';
-  $cfg->{response_mode}    ||= 'query';
-  $cfg->{timezone}         ||= 'Europe/Zurich';
+  # Soft defaults to avoid CGI 500 if keys are missing
+  $cfg->{auth_server_base}  ||= '';
+  $cfg->{realm}             ||= '';
+  $cfg->{client_id}         ||= '';
+  $cfg->{client_secret}     ||= '';
+  $cfg->{api_base}          ||= 'https://api.tariffs.ekz.ch/v1';
+  $cfg->{ems_instance_id}   ||= '';
+  $cfg->{scope}             ||= 'openid offline_access ems';
+  $cfg->{response_mode}     ||= 'query';
+  $cfg->{timezone}          ||= 'Europe/Zurich';
+  $cfg->{fallback_tariff_name} ||= 'integrated_400D';
+  $cfg->{retries}           = int($cfg->{retries} // 3);
+  $cfg->{token_store_path}  ||= File::Spec->catfile($LBPDATADIR || '/opt/loxberry/data/plugins/ekz_plugin', 'tokens.json');
+
+  # MQTT topic defaults (must NOT be removed)
+  $cfg->{mqtt_enabled}          = !!($cfg->{mqtt_enabled});
+  $cfg->{mqtt_host}             ||= 'localhost';
+  $cfg->{mqtt_port}             = int($cfg->{mqtt_port} // 1883);
+  $cfg->{mqtt_username}         ||= '';
+  $cfg->{mqtt_password}         ||= '';
+  $cfg->{mqtt_topic_raw}        ||= 'ekz/ems/tariffs/raw';
+  $cfg->{mqtt_topic_summary}    ||= 'ekz/ems/tariffs/now_plus_24h';
+  $cfg->{mqtt_topic_intervals}  ||= 'ekz/ems/tariffs/intervals';
+  $cfg->{mqtt_topic_hourly}     ||= 'ekz/ems/tariffs/hourly';
 
   return $cfg;
 }
@@ -143,6 +162,7 @@ sub load_cfg {
 # --------------------------
 # MQTT publish helper with fallback for insecure password login
 # --------------------------
+
 sub publish_mqtt {
   my ($cfg, $topic, $payload) = @_;
 
@@ -240,41 +260,84 @@ sub publish_mqtt {
 }
 
 # --------------------------
-# Completeness validators
+# Misc helpers
 # --------------------------
-sub expected_intervals_between {
-  my ($start_iso, $end_iso) = @_;
-  # We expect a full 24h window => 96 intervals (15 min each)
-  # Compute defensively in case other windows are used
-  my $s = Time::Piece->strptime(substr($start_iso,0,19), '%Y-%m-%dT%H:%M:%S')->epoch;
-  my $e = Time::Piece->strptime(substr($end_iso,0,19),   '%Y-%m-%dT%H:%M:%S')->epoch;
-  my $delta = $e - $s;
-  my $count = int($delta / 900);
-  return $count > 0 ? $count : 0;
+sub _randhex {
+  my ($len) = @_;
+  my @hex = ('0'..'9', 'a'..'f');
+  my $out = '';
+  for (1..($len||16)) { $out .= $hex[int(rand(@hex))]; }
+  return $out;
 }
 
-sub rows_nonzero_share {
-  my ($rows) = @_;
-  return 0 unless $rows && ref($rows) eq 'ARRAY' && @$rows;
-  my $n = scalar(@$rows);
-  my $nz = 0;
-  for my $r (@$rows) {
-    $nz++ if _block_chf_kwh_total($r) > 0;
+# --------------------------
+# Tokens storage helpers
+# --------------------------
+sub tokens_path {
+  my ($cfg) = @_;
+  if ($cfg && $cfg->{token_store_path}) {
+    my ($vol, $dir, undef) = File::Spec->splitpath($cfg->{token_store_path});
+    make_path($dir) unless -d $dir;
+    return $cfg->{token_store_path};
   }
-  return $nz / $n;
+  return File::Spec->catfile($LBPDATADIR, 'tokens.json');
 }
 
-sub payload_is_complete {
-  my ($payload, $start_iso, $end_iso) = @_;
-  return 0 unless $payload && ref($payload) eq 'HASH';
-  my $rows = $payload->{rows} // $payload->{prices} // [];
-  my $count = ref($rows) eq 'ARRAY' ? scalar(@$rows) : 0;
-  my $exp = expected_intervals_between($start_iso, $end_iso);
-  return 0 if $exp <= 0;
-  return 0 unless $count == $exp;
-  my $share = rows_nonzero_share($rows);
-  # Require most intervals to be non-zero; zeros indicate placeholder/unpublished
-  return $share >= 0.90 ? 1 : 0;
+sub load_tokens {
+  my ($cfg) = @_;
+  my $path = tokens_path($cfg);
+  return {} unless -f $path;
+  open my $fh, '<', $path or return {};
+  local $/ = undef;
+  my $raw = <$fh>; close $fh;
+  my $tok = eval { decode_json($raw) } // {};
+  return $tok;
+}
+
+sub save_tokens {
+  my ($tok, $cfg) = @_;
+  my $path = tokens_path($cfg);
+  my ($vol, $dir, undef) = File::Spec->splitpath($path);
+  make_path($dir) unless -d $dir;
+  open my $fh, '>', $path or die "Cannot write $path: $!";
+  print $fh encode_json($tok);
+  close $fh;
+  chmod 0640, $path;
+}
+
+# --------------------------
+# Access token handling (refresh)
+# Uses HTTP Basic auth for token endpoint
+# --------------------------
+sub ensure_access_token {
+  my ($cfg) = @_;
+  my $tok = load_tokens($cfg);
+
+  if ($tok->{access_token} && $tok->{expires_at} && time() < ($tok->{expires_at} - 30)) {
+    return $tok->{access_token};
+  }
+  unless ($tok->{refresh_token}) {
+    die "No refresh_token; sign in via UI once (or include offline_access in scope).";
+  }
+
+  my $ua = LWP::UserAgent->new(timeout => 30);
+  my $endpoint = $cfg->{auth_server_base} . "/realms/$cfg->{realm}/protocol/openid-connect/token";
+
+  my $req = POST $endpoint, [
+    grant_type    => 'refresh_token',
+    refresh_token => $tok->{refresh_token},
+  ];
+  $req->authorization_basic($cfg->{client_id}, $cfg->{client_secret});
+
+  my $res = $ua->request($req);
+  die "Token refresh HTTP ".$res->code.": ".$res->decoded_content unless $res->is_success;
+
+  my $j = decode_json($res->decoded_content);
+  $tok->{access_token}  = $j->{access_token} // '';
+  $tok->{refresh_token} = $j->{refresh_token} // $tok->{refresh_token};
+  $tok->{expires_at}    = time() + int($j->{expires_in} // 300);
+  save_tokens($tok, $cfg);
+  return $tok->{access_token};
 }
 
 # --------------------------
@@ -316,7 +379,7 @@ sub get_json_with_retry {
 }
 
 # --------------------------
-# Payload normalization
+# Fetch Data Window
 # --------------------------
 sub _normalize_payload {
   my ($p) = @_;
@@ -341,39 +404,13 @@ sub _normalize_payload {
   return $p;
 }
 
-# --------------------------
-# Public tariffs fetch helper by tariff_name
-# --------------------------
-sub fetch_public_tariffs_by_name {
-  my ($cfg, $start_iso, $end_iso, $tariff_name) = @_;
-  my %hdr = ( accept => "application/json" );
-  my $base = $cfg->{api_base};
-  return undef unless $tariff_name;
-  my $payload;
-  eval {
-    $payload = get_json_with_retry("$base/tariffs", \%hdr, {
-      tariff_name     => $tariff_name,
-      start_timestamp => $start_iso,
-      end_timestamp   => $end_iso,
-    }, int($cfg->{retries} || 3));
-    1;
-  } or do {
-    my $err = $@ || 'unknown error';
-    _lb_log('ERR', "public /tariffs (tariff_name=$tariff_name) failed: $err");
-    return undef;
-  };
-  return _normalize_payload($payload);
-}
-
-# --------------------------
-# Window fetch with layered fallbacks
-# --------------------------
 sub fetch_window {
   my ($cfg, $access, $start_iso, $end_iso) = @_;
 
   my %hdr = ( Authorization => "Bearer $access", accept => "application/json" );
   my $base    = $cfg->{api_base};
   my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
+
   my $attempts = int($cfg->{retries} || 3);
 
   # Helper to log a message to fetch.log (best-effort)
@@ -408,39 +445,44 @@ sub fetch_window {
     $source  = undef;
   };
 
+  # Normalize if needed and return if rows present
   if (defined $payload && ref($payload) eq 'HASH') {
     $payload = _normalize_payload($payload);
-    my $rows = $payload->{rows} // [];
-    my $count = scalar(@$rows);
-    my $exp   = expected_intervals_between($start_iso, $end_iso);
-    my $share = rows_nonzero_share($rows);
-    $log->("customerTariffs: rows=$count expected=$exp nonzero_share=$share");
-    if ($count == $exp && $share >= 0.90) {
-      eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'customer', from => $start_iso, to => $end_iso }); 1 };
+    if ($payload->{rows} && ref($payload->{rows}) eq 'ARRAY' && @{ $payload->{rows} }) {
+      $log->("customerTariffs: returned " . scalar(@{$payload->{rows}}) . " rows");
+      eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'customer', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
       return ($payload, 'customer');
     }
-    $log->("customerTariffs incomplete (zeros or missing rows); trying public fallbacks");
+    $log->("customerTariffs returned empty rows (count=" . ($payload->{interval_count}//0) . "), falling back to public tariffs");
   }
 
   # 2) Try public /tariffs with fallback_tariff_name (if set)
-  my $tariff_name = $cfg->{fallback_tariff_name} // '';
   my $pub_payload;
+  my $tariff_name = $cfg->{fallback_tariff_name} // '';
 
   if ($tariff_name ne '') {
-    $pub_payload = fetch_public_tariffs_by_name($cfg, $start_iso, $end_iso, $tariff_name);
-    if (defined $pub_payload) {
-      my $rows = $pub_payload->{rows} // [];
-      my $count = scalar(@$rows);
-      my $exp   = expected_intervals_between($start_iso, $end_iso);
-      my $share = rows_nonzero_share($rows);
-      $log->("public /tariffs (tariff_name=$tariff_name): rows=$count expected=$exp nonzero_share=$share");
-      if ($count == $exp && $share >= 0.90) {
-        eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 };
+    my $pub_params = {
+      tariff_name     => $tariff_name,
+      start_timestamp => $start_iso,
+      end_timestamp   => $end_iso,
+    };
+    eval {
+      $pub_payload = get_json_with_retry("$base/tariffs", \%hdr, $pub_params, $attempts);
+      1;
+    } or do {
+      my $err = $@ || 'unknown error';
+      $log->("public /tariffs (tariff_name=$tariff_name) failed: $err");
+      $pub_payload = undef;
+    };
+
+    if (defined $pub_payload && ref($pub_payload) eq 'HASH') {
+      $pub_payload = _normalize_payload($pub_payload);
+      if ($pub_payload->{rows} && ref($pub_payload->{rows}) eq 'ARRAY' && @{ $pub_payload->{rows} }) {
+        $log->("public /tariffs (tariff_name=$tariff_name): returned " . scalar(@{$pub_payload->{rows}}) . " rows");
+        eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
         return ($pub_payload, 'public');
       }
-      $log->("public /tariffs (tariff_name=$tariff_name) incomplete; trying public no-name");
-    } else {
-      $log->("public /tariffs (tariff_name=$tariff_name) failed; trying public no-name");
+      $log->("public /tariffs (tariff_name=$tariff_name) returned empty rows (count=" . ($pub_payload->{interval_count}//0) . ")");
     }
   } else {
     $log->("No fallback_tariff_name configured; skipping tariff_name-based public request");
@@ -458,22 +500,19 @@ sub fetch_window {
 
   if (defined $pub_payload && ref($pub_payload) eq 'HASH') {
     $pub_payload = _normalize_payload($pub_payload);
-    my $rows2 = $pub_payload->{rows} // [];
-    my $count2 = scalar(@$rows2);
-    my $exp2   = expected_intervals_between($start_iso, $end_iso);
-    my $share2 = rows_nonzero_share($rows2);
-    $log->("public /tariffs (no tariff_name): rows=$count2 expected=$exp2 nonzero_share=$share2");
-    if ($count2 == $exp2 && $share2 >= 0.90) {
-      eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 };
+    if ($pub_payload->{rows} && ref($pub_payload->{rows}) eq 'ARRAY' && @{ $pub_payload->{rows} }) {
+      $log->("public /tariffs (no tariff_name): returned " . scalar(@{$pub_payload->{rows}}) . " rows");
+      eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
       return ($pub_payload, 'public');
     }
-    $log->("public /tariffs (no tariff_name) incomplete.");
+    $log->("public /tariffs (no tariff_name) returned empty rows (count=" . ($pub_payload->{interval_count}//0) . ")");
   }
 
-  # Nothing complete; log and return normalized empty payload
-  $log->("No complete tariff rows found from customerTariffs or public /tariffs endpoints.");
-  my $empty = _normalize_payload( {} );
-  return ($empty, 'public');
+  # Nothing returned rows; log and return empty payload with 'public' source
+  $log->("No tariff rows found from customerTariffs or public /tariffs endpoints; returning empty payload.");
+  $pub_payload = {} unless defined $pub_payload && ref($pub_payload) eq 'HASH';
+  $pub_payload = _normalize_payload($pub_payload);
+  return ($pub_payload, 'public');
 }
 
 # --------------------------
