@@ -607,7 +607,7 @@ sub build_scheduled_window {
   # and the tariffs themselves cover the next day's 00:00..24:00 (96 intervals).
   my $now = localtime;
   my $tomorrow = $now + 24*3600;
-  my $start = Time::Piece->strptime($tomorrow->strftime('%Y-%m-%d').' 00:00:00', '%Y-%m-%d %H:%M:%S');
+  my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d').' 00:00:00', '%Y-%m-%d %H:%M:%S');
   my $end = $start + 24*3600;
 
   # Keep local timezone offset in the ISO strings (e.g. +01:00)
