@@ -182,12 +182,28 @@ my $ok = eval {
   }
 
  
-  # Don't attempt to fetch next-day tariffs before EKZ publishes them at 18:00 local time,
-  # unless the user explicitly forces a fetch or requests today's tariffs.
-  # If you need to fetch the current-day tariffs (today 00:00..24:00) before 18:00,
-  # call run_rolling_fetch.cgi?force=1 (or ?today=1 for explicit today).
-  if (!$force && !$q->param('today')) {
-    my $now_hour = (localtime(time))[2]; # 0..23
+  # Decide whether this run should fetch "today" (current day) or "next day".
+  # Rules:
+  # - ?today=1 forces fetching today.
+  # - ?force=1 before 18:00 is treated as a manual request and will fetch today.
+  # - Interactive web requests (coming from a browser, i.e. REMOTE_ADDR is set) with no params
+  #   before 18:00 will fetch today (convenience for manual Fetch Now).
+  # - Cron/automated runs (no REMOTE_ADDR) without params will NOT fetch next-day before 18:00.
+  my $now_hour = (localtime(time))[2]; # 0..23
+  my $is_interactive = defined $ENV{REMOTE_ADDR} && $ENV{REMOTE_ADDR} ne '';
+  my $want_today = 0;
+  if ($q->param('today')) {
+    $want_today = 1;
+  } elsif ($force && $now_hour < 18) {
+    # forced manual run before 18:00 -> treat as today's fetch
+    $want_today = 1;
+  } elsif (!$force && $is_interactive && $now_hour < 18) {
+    # interactive browser request before 18:00 with no params -> fetch today
+    $want_today = 1;
+  }
+
+  if (!$want_today) {
+    # Not fetching today: enforce "do not fetch next-day before 18:00"
     if ($now_hour < 18) {
       LOGINF("Skipping fetch for next-day: not published yet (local hour=%d)", $now_hour);
       print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_published_yet', hour => $now_hour });
@@ -216,15 +232,10 @@ my $ok = eval {
   }
 
   # Build window and fetch data from EMS
-  # Determine whether to fetch "today" or "next-day":
-  # - If user requested ?today=1, fetch today's 00:00..24:00 (useful for on-demand fetches)
-  # - If forced (?force=1) and local hour < 18, fetch today's 00:00..24:00 (user probably wants current day)
-  # - Otherwise, use the normal scheduled window (next-day 00:00..24:00 as returned by build_scheduled_window)
   my ($start_iso, $end_iso);
   my $now = localtime;
-  my $now_hour = (localtime(time))[2];
-  if ($q->param('today') || ($force && $now_hour < 18)) {
-    LOGINF("Fetching CURRENT day tariffs on demand (today) because %s", ($q->param('today') ? 'today param' : 'force before 18:00'));
+  if ($want_today) {
+    LOGINF("Fetching CURRENT day tariffs on demand (today) - interactive/forced request");
     my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
     my $end   = $start + 24*3600;
     my $off = $now->strftime('%z');            # e.g. +0100
