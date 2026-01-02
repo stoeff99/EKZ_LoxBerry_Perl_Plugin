@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-
+use Time::Piece;
 use CGI::Carp qw(fatalsToBrowser);
 use CGI;
 use JSON::PP;
@@ -182,12 +182,14 @@ my $ok = eval {
   }
 
  
-  # Don't attempt to fetch next-day tariffs before EKZ publishes them at 18:00 local time.
-  # If you really need to force a fetch for debugging, call run_rolling_fetch.cgi?force=1
-  if (!$force) {
+  # Don't attempt to fetch next-day tariffs before EKZ publishes them at 18:00 local time,
+  # unless the user explicitly forces a fetch or requests today's tariffs.
+  # If you need to fetch the current-day tariffs (today 00:00..24:00) before 18:00,
+  # call run_rolling_fetch.cgi?force=1 (or ?today=1 for explicit today).
+  if (!$force && !$q->param('today')) {
     my $now_hour = (localtime(time))[2]; # 0..23
     if ($now_hour < 18) {
-      LOGINF("Skipping fetch: next-day tariffs are not published yet (local hour=%d)", $now_hour);
+      LOGINF("Skipping fetch for next-day: not published yet (local hour=%d)", $now_hour);
       print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_published_yet', hour => $now_hour });
       return 1;
     }
@@ -214,7 +216,24 @@ my $ok = eval {
   }
 
   # Build window and fetch data from EMS
-  my ($start_iso, $end_iso) = build_scheduled_window();
+  # Determine whether to fetch "today" or "next-day":
+  # - If user requested ?today=1, fetch today's 00:00..24:00 (useful for on-demand fetches)
+  # - If forced (?force=1) and local hour < 18, fetch today's 00:00..24:00 (user probably wants current day)
+  # - Otherwise, use the normal scheduled window (next-day 00:00..24:00 as returned by build_scheduled_window)
+  my ($start_iso, $end_iso);
+  my $now = localtime;
+  my $now_hour = (localtime(time))[2];
+  if ($q->param('today') || ($force && $now_hour < 18)) {
+    LOGINF("Fetching CURRENT day tariffs on demand (today) because %s", ($q->param('today') ? 'today param' : 'force before 18:00'));
+    my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
+    my $end   = $start + 24*3600;
+    my $off = $now->strftime('%z');            # e.g. +0100
+    $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/; # +0100 -> +01:00
+    $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+    $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+  } else {
+    ($start_iso, $end_iso) = build_scheduled_window();
+  }
 
   my $access = ensure_access_token($cfg);
   my ($payload, $source) = fetch_window($cfg, $access, $start_iso, $end_iso);
