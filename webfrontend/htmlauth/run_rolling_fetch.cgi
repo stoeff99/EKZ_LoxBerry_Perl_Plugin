@@ -190,7 +190,12 @@ my $ok = eval {
   #   before 18:00 will fetch today (convenience for manual Fetch Now).
   # - Cron/automated runs (no REMOTE_ADDR) without params will NOT fetch next-day before 18:00.
   my $now_hour = (localtime(time))[2]; # 0..23
-  my $is_interactive = defined $ENV{REMOTE_ADDR} && $ENV{REMOTE_ADDR} ne '';
+  # Consider request interactive if REMOTE_ADDR (IP) or HTTP_USER_AGENT exists.
+  # Some server setups do not populate REMOTE_ADDR for proxied/internal requests,
+  # but browsers always send a User-Agent header which appears as HTTP_USER_AGENT.
+  my $is_interactive =
+       (defined $ENV{REMOTE_ADDR} && $ENV{REMOTE_ADDR} ne '')
+    || (defined $ENV{HTTP_USER_AGENT} && $ENV{HTTP_USER_AGENT} ne '');
   my $want_today = 0;
   if ($q->param('today')) {
     $want_today = 1;
