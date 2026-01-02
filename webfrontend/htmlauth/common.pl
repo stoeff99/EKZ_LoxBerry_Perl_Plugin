@@ -602,11 +602,15 @@ sub try_ensure_linked {
 }
 
 sub build_scheduled_window {
-  # today 18:00 local → +24h, include timezone offset like +01:00
+  # Build window for the "following day" (next-day 00:00 local -> +24h)
+  # Per EKZ API: dynamic tariffs are published until 18:00 for the following day,
+  # and the tariffs themselves cover the next day's 00:00..24:00 (96 intervals).
   my $now = localtime;
-  my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d').' 18:00:00', '%Y-%m-%d %H:%M:%S');
+  my $tomorrow = $now + 24*3600;
+  my $start = Time::Piece->strptime($tomorrow->strftime('%Y-%m-%d').' 00:00:00', '%Y-%m-%d %H:%M:%S');
   my $end = $start + 24*3600;
 
+  # Keep local timezone offset in the ISO strings (e.g. +01:00)
   my $off = $now->strftime('%z');            # e.g. +0100
   $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/; # +0100 -> +01:00
 
