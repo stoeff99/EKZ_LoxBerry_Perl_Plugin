@@ -9,15 +9,17 @@
   "scope": "openid offline_access",
   "response_mode": "query",
   "timezone": "Europe/Zurich",
-  "fallback_tariff_name": "electricity_standard",
+
+  "fallback_tariff_name": "integrated_400D",
   "retries": 3,
-  "token_store_path": "/opt/loxberry/data/ekz/tokens.json",
+  "token_store_path": "/opt/loxberry/data/plugins/ekz_plugin/tokens.json",
 
   "mqtt_enabled": true,
   "mqtt_host": "localhost",
   "mqtt_port": 1883,
   "mqtt_username": "",
   "mqtt_password": "",
+
   "mqtt_topic_raw": "ekz/ems/tariffs/raw",
   "mqtt_topic_summary": "ekz/ems/tariffs/now_plus_24h",
   "mqtt_topic_intervals": "ekz/ems/tariffs/intervals",
