@@ -230,30 +230,55 @@ my $json_intervals = JSON::PP->new->canonical(1)->encode($intervals_msg);
 my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
 
 # --------------------------
-# Relative 24-hour view (now +0 .. now +23)
+# Relative 24-hour view (now +0 .. now +23) — epoch-aligned matching
 # --------------------------
-# Build a map by prefix YYYY-MM-DDTHH => hourly entry for quick lookup
-my %hour_prefix_map;
+# Parse ISO timestamp with offset into a UTC epoch (seconds since epoch).
+sub _iso_to_epoch {
+  my ($iso) = @_;
+  return undef unless defined $iso;
+  # Match:  YYYY-MM-DDTHH:MM:SS(+|-)HH:MM  or ...Z
+  if ($iso =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(Z|([+\-])(\d{2}):(\d{2}))?$/) {
+    my ($Y,$M,$D,$h,$m,$s,$z, $sign, $oh, $om) = ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10);
+    $Y += 0; $M += 0; $D += 0; $h += 0; $m += 0; $s += 0;
+    # timegm expects (sec,min,hour,day,mon-1,year-1900)
+    my $utc_epoch = timegm($s, $m, $h, $D, $M-1, $Y-1900);
+    my $offset_secs = 0;
+    if (defined $z && $z ne 'Z' && defined $sign && defined $oh) {
+      $offset_secs = ($oh * 3600) + ($om * 60);
+      $offset_secs *= ($sign eq '+') ? 1 : -1;
+    }
+    # The ISO time represents local time with offset; UTC epoch = timegm(local) - offset
+    return $utc_epoch - $offset_secs;
+  }
+  return undef;
+}
+
+# Build epoch -> hourly entry map (hour-start epoch)
+my %hour_epoch_map;
 for my $h (@hourly) {
   next unless ref $h eq 'HASH' && defined $h->{hour_start};
-  my $hk = $h->{hour_start};
-  my $prefix = substr($hk, 0, 13);  # "YYYY-MM-DDTHH"
-  $hour_prefix_map{$prefix} = $h unless exists $hour_prefix_map{$prefix};
+  my $iso = $h->{hour_start};
+  my $e = _iso_to_epoch($iso);
+  next unless defined $e;
+  # Normalize to hour-start epoch (round down to hour)
+  my $hour_epoch = int($e / 3600) * 3600;
+  $hour_epoch_map{$hour_epoch} = $h unless exists $hour_epoch_map{$hour_epoch};
 }
 
 my @relative;
 for my $off (0..23) {
   my $t = time + $off * 3600;
-  my $prefix = strftime('%Y-%m-%dT%H', localtime($t));
-  my $entry = $hour_prefix_map{$prefix};
-  my $hs;
-  my $val;
+  my $target_hour_epoch = int($t / 3600) * 3600;
+  my $entry = $hour_epoch_map{$target_hour_epoch};
+  my ($hs, $val);
   if ($entry) {
     $hs  = $entry->{hour_start};
     $val = defined $entry->{avg_total_chf} ? ($entry->{avg_total_chf} + 0) : undef;
   } else {
-    # fallback hour_start (no timezone offset appended)
-    $hs  = strftime('%Y-%m-%dT%H:00:00', localtime($t));
+    # Fallback: format local hour-start (append local timezone offset)
+    my $hs_local = strftime('%Y-%m-%dT%H:00:00', localtime($t));
+    my $offstr = strftime('%z', localtime($t)); $offstr =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
+    $hs = $hs_local . $offstr;
     $val = undef;
   }
   push @relative, {
