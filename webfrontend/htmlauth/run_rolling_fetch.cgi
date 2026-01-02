@@ -119,6 +119,7 @@ my $ok = eval {
   my $now_epoch = time();
   my $now_hour  = _local_hour();
 
+  # Track last successful fetch for skip logic
   my $last_file = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
   my $already_fetched_today_evening = 0;
   if (-f $last_file) {
@@ -129,14 +130,17 @@ my $ok = eval {
       my $last_ts = $j->{last_success_epoch};
       if (defined $last_ts && same_calendar_day($now_epoch, $last_ts)) {
         my $last_hour = (localtime($last_ts))[2];
+        # For once/day: if we already fetched any time after 18:00 today, skip
         $already_fetched_today_evening = ($last_hour >= 18) ? 1 : 0;
       }
     }
   }
 
+  # Schedule guard
   if (!$force) {
     my $allowed = 0;
     if ($schedule eq '1') {
+      # Allow first fetch any time after 18:00 (>= 18), not just exactly 18:00
       $allowed = ($now_hour >= 18) ? 1 : 0;
     } elsif ($schedule eq '2') {
       $allowed = ($now_hour == 6 || $now_hour >= 18) ? 1 : 0;
@@ -163,7 +167,11 @@ my $ok = eval {
     LOGINF("Force fetch requested via ?force=1");
   }
 
-  # Decide TODAY vs NEXT-DAY
+  # Decide TODAY vs NEXT-DAY (explicit and simple):
+  # - ?today=1 => fetch TODAY (00:00..24:00)
+  # - before 18:00 and force => fetch TODAY
+  # - otherwise if hour >= 18 => fetch NEXT-DAY
+  # - before 18:00 without params => fetch TODAY (manual convenience)
   my $want_today = 0;
   if (($q->param('today') // '') eq '1') {
     $want_today = 1;
@@ -192,41 +200,33 @@ my $ok = eval {
     }
   }
 
+  # Link/auth checks
+  my ($link_status, $link_url) = try_ensure_linked($cfg);
+  if ($link_status eq 'not_signed_in') {
+    print encode_json({ error => 'not_signed_in', message => 'User not signed in. Please sign in via the plugin UI.' });
+    return 1;
+  }
+  if ($link_status eq 'link_required') {
+    print encode_json({
+      error => 'link_required',
+      message => 'EMS is not linked to customer account. Redirect customer to linking flow.',
+      linking_process_redirect_uri => $link_url,
+    });
+    return 1;
+  }
+  if ($link_status eq 'error') {
+    my (undef, undef, $err) = try_ensure_linked($cfg);
+    print encode_json({ error => 'link_check_failed', message => $err // 'Unknown error checking link status' });
+    return 1;
+  }
+
+  # Fetch window
   my $access = ensure_access_token($cfg);
   my ($payload, $source) = fetch_window($cfg, $access, $start_iso, $end_iso);
-
   unless (defined $payload && ref($payload) eq 'HASH') {
     my $msg = "Unexpected response from fetch_window";
     LOGERR($msg);
     print encode_json({ error => 'invalid_fetch_response', message => $msg });
-    return 1;
-  }
-
-  # Validate completeness; if NEXT-DAY and incomplete after 18:00, fallback to standard tariff_name
-  my $is_complete = payload_is_complete($payload, $start_iso, $end_iso);
-  if (!$is_complete && !$want_today && $now_hour >= 18) {
-    my $fallback = $cfg->{fallback_tariff_name} // '';
-    if ($fallback ne '') {
-      LOGINF("Next-day payload incomplete after 18:00. Attempting fallback tariff_name=%s", $fallback);
-      my $fb = fetch_public_tariffs_by_name($cfg, $start_iso, $end_iso, $fallback);
-      if (defined $fb && payload_is_complete($fb, $start_iso, $end_iso)) {
-        $payload = $fb;
-        $source  = 'public';
-        LOGINF("Fallback tariff applied for next-day.");
-      } else {
-        LOGERR("Fallback tariff_name=%s did not return complete data.", $fallback);
-        # Don’t overwrite latest with incomplete data
-        print encode_json({ error => 'incomplete_nextday', message => 'Next-day tariffs not fully available; fallback also incomplete. Keeping previous file.' });
-        return 1;
-      }
-    } else {
-      LOGERR("No fallback_tariff_name configured; not overwriting latest with incomplete data.");
-      print encode_json({ error => 'incomplete_nextday', message => 'Next-day tariffs incomplete and no fallback configured. Keeping previous file.' });
-      return 1;
-    }
-  } elsif (!$is_complete) {
-    LOGERR("Payload incomplete (zeros/missing rows). Not overwriting tariffs_latest.json.");
-    print encode_json({ error => 'incomplete_payload', message => 'Tariff data incomplete for requested window. Keeping previous file.' });
     return 1;
   }
 
