@@ -45,14 +45,15 @@ my $ok = eval {
   my $now_epoch = time();
   my $now_hour  = (localtime($now_epoch))[2];
 
-  # Once/day: allow first fetch any time after 18:00 (>=18), not only exactly 18:00
+  # Schedule guard
   if (!$force) {
     my $allowed = 0;
-    if ($schedule eq '1')      { $allowed = ($now_hour >= 18) ? 1 : 0; }
-    elsif ($schedule eq '2')   { $allowed = ($now_hour == 6 || $now_hour >= 18) ? 1 : 0; }
-    elsif ($schedule eq '12')  { $allowed = ($now_hour % 2 == 0) ? 1 : 0; }
-    elsif ($schedule eq '24')  { $allowed = 1; }
-    else                       { $allowed = 0; }
+    if    ($schedule eq '1')  { $allowed = ($now_hour >= 18) ? 1 : 0; }
+    elsif ($schedule eq '2')  { $allowed = ($now_hour == 6 || $now_hour >= 18) ? 1 : 0; }
+    elsif ($schedule eq '12') { $allowed = ($now_hour % 2 == 0) ? 1 : 0; }
+    elsif ($schedule eq '24') { $allowed = 1; }
+    else                      { $allowed = 0; }
+
     unless ($allowed) {
       LOGINF("Skipped fetch: not scheduled now (hour=$now_hour schedule=$schedule)");
       print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_scheduled_now', hour => $now_hour, schedule => $schedule });
