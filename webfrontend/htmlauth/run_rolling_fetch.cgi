@@ -181,6 +181,18 @@ my $ok = eval {
     LOGINF("Force fetch requested via ?force=1");
   }
 
+ 
+  # Don't attempt to fetch next-day tariffs before EKZ publishes them at 18:00 local time.
+  # If you really need to force a fetch for debugging, call run_rolling_fetch.cgi?force=1
+  if (!$force) {
+    my $now_hour = (localtime(time))[2]; # 0..23
+    if ($now_hour < 18) {
+      LOGINF("Skipping fetch: next-day tariffs are not published yet (local hour=%d)", $now_hour);
+      print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_published_yet', hour => $now_hour });
+      return 1;
+    }
+  }
+
   # ---- existing link / auth checks ----
   my ($link_status, $link_url) = try_ensure_linked($cfg);
   if ($link_status eq 'not_signed_in') {
