@@ -8,6 +8,7 @@ use JSON::PP;
 use LWP::UserAgent;
 use HTTP::Request::Common qw(POST);
 use Time::Piece;
+use Time::Local qw(timegm);
 use File::Spec;
 use File::Path qw(make_path);
 use FindBin;
@@ -160,9 +161,8 @@ sub load_cfg {
 }
 
 # --------------------------
-# MQTT publish helper with fallback for insecure password login
+# MQTT publish helper
 # --------------------------
-
 sub publish_mqtt {
   my ($cfg, $topic, $payload) = @_;
 
@@ -198,19 +198,13 @@ sub publish_mqtt {
 
   if (!$net_ok) {
     my $err = $@ || 'unknown';
-
-    # If credentials are set and Net::MQTT::Simple blocks insecure login,
-    # or any other failure happened with creds, fallback to mosquitto_pub.
     if (defined $user && $user ne '') {
       $used_cli_fallback = 1;
 
-      # Write payload to a temp file and use mosquitto_pub -f to avoid quoting issues
       my $tmpfile = File::Spec->catfile($LBPDATADIR || '/tmp', "mqtt_payload_$$.json");
       eval {
         open my $tfh, '>', $tmpfile or die "Cannot write $tmpfile: $!";
-        print $tfh $msg;
-        close $tfh;
-        1;
+        print $tfh $msg; close $tfh; 1;
       } or do {
         $ok = 0;
         my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
@@ -226,7 +220,6 @@ sub publish_mqtt {
 
       my $rc = system(@cmd);
       my $exit = ($rc == -1) ? -1 : ($rc >> 8);
-
       unlink $tmpfile;
 
       if ($exit != 0) {
@@ -238,7 +231,6 @@ sub publish_mqtt {
         }
       }
     } else {
-      # Anonymous publish failed; log and return
       $ok = 0;
       my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
       if (open my $lf, '>>', $logfile) {
@@ -260,84 +252,67 @@ sub publish_mqtt {
 }
 
 # --------------------------
-# Misc helpers
+# Completeness validators
 # --------------------------
-sub _randhex {
-  my ($len) = @_;
-  my @hex = ('0'..'9', 'a'..'f');
-  my $out = '';
-  for (1..($len||16)) { $out .= $hex[int(rand(@hex))]; }
-  return $out;
+sub expected_intervals_between {
+  my ($start_iso, $end_iso) = @_;
+  my $s = Time::Piece->strptime(substr($start_iso,0,19), '%Y-%m-%dT%H:%M:%S')->epoch;
+  my $e = Time::Piece->strptime(substr($end_iso,0,19),   '%Y-%m-%dT%H:%M:%S')->epoch;
+  my $delta = $e - $s;
+  my $count = int($delta / 900);
+  return $count > 0 ? $count : 0;
 }
 
-# --------------------------
-# Tokens storage helpers
-# --------------------------
-sub tokens_path {
-  my ($cfg) = @_;
-  if ($cfg && $cfg->{token_store_path}) {
-    my ($vol, $dir, undef) = File::Spec->splitpath($cfg->{token_store_path});
-    make_path($dir) unless -d $dir;
-    return $cfg->{token_store_path};
+sub _norm_unit_name {
+  my ($u) = @_;
+  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]?kwh$/;
+  return 'CHF_M'   if defined $u && lc($u) =~ /^chf[_-]?m$/;
+  return $u // 'CHF_kWh';
+}
+
+sub _block_chf_kwh_total {
+  my ($b) = @_;
+  return 0 unless defined $b && ref($b) eq 'HASH';
+  my ($e_kwh, $g_kwh, $r_kwh, $i_kwh) = (0,0,0,0);
+  for my $arr_name (qw/electricity grid regional_fees integrated/) {
+    my $arr = $b->{$arr_name};
+    next unless $arr && ref($arr) eq 'ARRAY';
+    for my $e (@$arr) {
+      next unless ref($e) eq 'HASH';
+      my $unit = _norm_unit_name($e->{unit});
+      next unless $unit eq 'CHF_kWh';
+      my $val = $e->{value};
+      $val = 0 unless defined $val;
+      if ($arr_name eq 'electricity') { $e_kwh = $val + 0; }
+      elsif ($arr_name eq 'grid')     { $g_kwh = $val + 0; }
+      elsif ($arr_name eq 'regional_fees') { $r_kwh = $val + 0; }
+      elsif ($arr_name eq 'integrated')    { $i_kwh = $val + 0; }
+    }
   }
-  return File::Spec->catfile($LBPDATADIR, 'tokens.json');
+  return ($e_kwh || $g_kwh) ? ($e_kwh + $g_kwh + $r_kwh) : ($i_kwh + $r_kwh);
 }
 
-sub load_tokens {
-  my ($cfg) = @_;
-  my $path = tokens_path($cfg);
-  return {} unless -f $path;
-  open my $fh, '<', $path or return {};
-  local $/ = undef;
-  my $raw = <$fh>; close $fh;
-  my $tok = eval { decode_json($raw) } // {};
-  return $tok;
-}
-
-sub save_tokens {
-  my ($tok, $cfg) = @_;
-  my $path = tokens_path($cfg);
-  my ($vol, $dir, undef) = File::Spec->splitpath($path);
-  make_path($dir) unless -d $dir;
-  open my $fh, '>', $path or die "Cannot write $path: $!";
-  print $fh encode_json($tok);
-  close $fh;
-  chmod 0640, $path;
-}
-
-# --------------------------
-# Access token handling (refresh)
-# Uses HTTP Basic auth for token endpoint
-# --------------------------
-sub ensure_access_token {
-  my ($cfg) = @_;
-  my $tok = load_tokens($cfg);
-
-  if ($tok->{access_token} && $tok->{expires_at} && time() < ($tok->{expires_at} - 30)) {
-    return $tok->{access_token};
+sub rows_nonzero_share {
+  my ($rows) = @_;
+  return 0 unless $rows && ref($rows) eq 'ARRAY' && @$rows;
+  my $n = scalar(@$rows);
+  my $nz = 0;
+  for my $r (@$rows) {
+    $nz++ if _block_chf_kwh_total($r) > 0;
   }
-  unless ($tok->{refresh_token}) {
-    die "No refresh_token; sign in via UI once (or include offline_access in scope).";
-  }
+  return $nz / $n;
+}
 
-  my $ua = LWP::UserAgent->new(timeout => 30);
-  my $endpoint = $cfg->{auth_server_base} . "/realms/$cfg->{realm}/protocol/openid-connect/token";
-
-  my $req = POST $endpoint, [
-    grant_type    => 'refresh_token',
-    refresh_token => $tok->{refresh_token},
-  ];
-  $req->authorization_basic($cfg->{client_id}, $cfg->{client_secret});
-
-  my $res = $ua->request($req);
-  die "Token refresh HTTP ".$res->code.": ".$res->decoded_content unless $res->is_success;
-
-  my $j = decode_json($res->decoded_content);
-  $tok->{access_token}  = $j->{access_token} // '';
-  $tok->{refresh_token} = $j->{refresh_token} // $tok->{refresh_token};
-  $tok->{expires_at}    = time() + int($j->{expires_in} // 300);
-  save_tokens($tok, $cfg);
-  return $tok->{access_token};
+sub payload_is_complete {
+  my ($payload, $start_iso, $end_iso) = @_;
+  return 0 unless $payload && ref($payload) eq 'HASH';
+  my $rows = $payload->{rows} // $payload->{prices} // [];
+  my $count = ref($rows) eq 'ARRAY' ? scalar(@$rows) : 0;
+  my $exp = expected_intervals_between($start_iso, $end_iso);
+  return 0 if $exp <= 0;
+  return 0 unless $count == $exp;
+  my $share = rows_nonzero_share($rows);
+  return $share >= 0.90 ? 1 : 0;
 }
 
 # --------------------------
@@ -348,7 +323,6 @@ sub get_json_with_retry {
   $attempts = ($attempts && $attempts > 0) ? $attempts : 3;
   my $ua = LWP::UserAgent->new(timeout => 30);
 
-  # URL-encode query parameters
   my $qs = '';
   if ($params && ref $params eq 'HASH' && keys %$params) {
     my @pairs = map {
@@ -379,18 +353,14 @@ sub get_json_with_retry {
 }
 
 # --------------------------
-# Fetch Data Window
+# Payload normalization and public fallback helper
 # --------------------------
 sub _normalize_payload {
   my ($p) = @_;
   return {} unless defined $p && ref($p) eq 'HASH';
-
-  # If API returned 'prices' (public format), map to 'rows'
   if (exists $p->{prices} && ref($p->{prices}) eq 'ARRAY' && (!exists $p->{rows} || ref($p->{rows}) ne 'ARRAY')) {
     $p->{rows} = $p->{prices};
   }
-
-  # Ensure interval_count is present
   unless (defined $p->{interval_count}) {
     if (exists $p->{rows} && ref($p->{rows}) eq 'ARRAY') {
       $p->{interval_count} = scalar @{ $p->{rows} };
@@ -400,20 +370,41 @@ sub _normalize_payload {
       $p->{interval_count} = 0;
     }
   }
-
   return $p;
 }
 
+sub fetch_public_tariffs_by_name {
+  my ($cfg, $start_iso, $end_iso, $tariff_name) = @_;
+  my %hdr = ( accept => "application/json" );
+  my $base = $cfg->{api_base};
+  return undef unless $tariff_name;
+  my $payload;
+  eval {
+    $payload = get_json_with_retry("$base/tariffs", \%hdr, {
+      tariff_name     => $tariff_name,
+      start_timestamp => $start_iso,
+      end_timestamp   => $end_iso,
+    }, int($cfg->{retries} || 3));
+    1;
+  } or do {
+    my $err = $@ || 'unknown error';
+    _lb_log('ERR', "public /tariffs (tariff_name=$tariff_name) failed: $err");
+    return undef;
+  };
+  return _normalize_payload($payload);
+}
+
+# --------------------------
+# Window fetch with layered fallbacks
+# --------------------------
 sub fetch_window {
   my ($cfg, $access, $start_iso, $end_iso) = @_;
 
   my %hdr = ( Authorization => "Bearer $access", accept => "application/json" );
   my $base    = $cfg->{api_base};
   my $logfile = File::Spec->catfile($LBPDATADIR, 'fetch.log');
-
   my $attempts = int($cfg->{retries} || 3);
 
-  # Helper to log a message to fetch.log (best-effort)
   my $log = sub {
     my ($m) = @_;
     eval {
@@ -427,7 +418,7 @@ sub fetch_window {
 
   my ($payload, $source);
 
-  # 1) Try customerTariffs
+  # 1) Customer tariffs
   my $cust_params = {
     ems_instance_id => $cfg->{ems_instance_id},
     start_timestamp => $start_iso,
@@ -439,84 +430,79 @@ sub fetch_window {
     $source  = 'customer';
     1;
   } or do {
-    my $err = $@ || 'unknown error';
-    $log->("customerTariffs failed: $err");
-    $payload = undef;
-    $source  = undef;
+    $log->("customerTariffs failed: " . ($@ || 'unknown'));
+    $payload = undef; $source = undef;
   };
 
-  # Normalize if needed and return if rows present
   if (defined $payload && ref($payload) eq 'HASH') {
     $payload = _normalize_payload($payload);
-    if ($payload->{rows} && ref($payload->{rows}) eq 'ARRAY' && @{ $payload->{rows} }) {
-      $log->("customerTariffs: returned " . scalar(@{$payload->{rows}}) . " rows");
-      eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'customer', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
+    my $rows = $payload->{rows} // [];
+    my $count = scalar(@$rows);
+    my $exp   = expected_intervals_between($start_iso, $end_iso);
+    my $share = rows_nonzero_share($rows);
+    $log->("customerTariffs: rows=$count expected=$exp nonzero_share=$share");
+    if ($count == $exp && $share >= 0.90) {
+      eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'customer', from => $start_iso, to => $end_iso }); 1 };
       return ($payload, 'customer');
     }
-    $log->("customerTariffs returned empty rows (count=" . ($payload->{interval_count}//0) . "), falling back to public tariffs");
+    $log->("customerTariffs incomplete; trying public fallbacks");
   }
 
-  # 2) Try public /tariffs with fallback_tariff_name (if set)
-  my $pub_payload;
+  # 2) Public tariffs by fallback_tariff_name
   my $tariff_name = $cfg->{fallback_tariff_name} // '';
+  my $pub_payload;
 
   if ($tariff_name ne '') {
-    my $pub_params = {
-      tariff_name     => $tariff_name,
-      start_timestamp => $start_iso,
-      end_timestamp   => $end_iso,
-    };
-    eval {
-      $pub_payload = get_json_with_retry("$base/tariffs", \%hdr, $pub_params, $attempts);
-      1;
-    } or do {
-      my $err = $@ || 'unknown error';
-      $log->("public /tariffs (tariff_name=$tariff_name) failed: $err");
-      $pub_payload = undef;
-    };
-
-    if (defined $pub_payload && ref($pub_payload) eq 'HASH') {
-      $pub_payload = _normalize_payload($pub_payload);
-      if ($pub_payload->{rows} && ref($pub_payload->{rows}) eq 'ARRAY' && @{ $pub_payload->{rows} }) {
-        $log->("public /tariffs (tariff_name=$tariff_name): returned " . scalar(@{$pub_payload->{rows}}) . " rows");
-        eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
+    $pub_payload = fetch_public_tariffs_by_name($cfg, $start_iso, $end_iso, $tariff_name);
+    if (defined $pub_payload) {
+      my $rows = $pub_payload->{rows} // [];
+      my $count = scalar(@$rows);
+      my $exp   = expected_intervals_between($start_iso, $end_iso);
+      my $share = rows_nonzero_share($rows);
+      $log->("public /tariffs (tariff_name=$tariff_name): rows=$count expected=$exp nonzero_share=$share");
+      if ($count == $exp && $share >= 0.90) {
+        eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 };
         return ($pub_payload, 'public');
       }
-      $log->("public /tariffs (tariff_name=$tariff_name) returned empty rows (count=" . ($pub_payload->{interval_count}//0) . ")");
+      $log->("public /tariffs (tariff_name=$tariff_name) incomplete; trying public no-name");
+    } else {
+      $log->("public /tariffs (tariff_name=$tariff_name) failed; trying public no-name");
     }
   } else {
     $log->("No fallback_tariff_name configured; skipping tariff_name-based public request");
   }
 
-  # 3) Try public /tariffs without tariff_name (defaults)
+  # 3) Public tariffs without tariff_name
   eval {
     $pub_payload = get_json_with_retry("$base/tariffs", \%hdr, { start_timestamp => $start_iso, end_timestamp => $end_iso }, $attempts);
     1;
   } or do {
-    my $err = $@ || 'unknown error';
-    $log->("public /tariffs (no tariff_name) failed: $err");
+    $log->("public /tariffs (no tariff_name) failed: " . ($@ || 'unknown'));
     $pub_payload = undef;
   };
 
   if (defined $pub_payload && ref($pub_payload) eq 'HASH') {
     $pub_payload = _normalize_payload($pub_payload);
-    if ($pub_payload->{rows} && ref($pub_payload->{rows}) eq 'ARRAY' && @{ $pub_payload->{rows} }) {
-      $log->("public /tariffs (no tariff_name): returned " . scalar(@{$pub_payload->{rows}}) . " rows");
-      eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
+    my $rows2 = $pub_payload->{rows} // [];
+    my $count2 = scalar(@$rows2);
+    my $exp2   = expected_intervals_between($start_iso, $end_iso);
+    my $share2 = rows_nonzero_share($rows2);
+    $log->("public /tariffs (no tariff_name): rows=$count2 expected=$exp2 nonzero_share=$share2");
+    if ($count2 == $exp2 && $share2 >= 0.90) {
+      eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 };
       return ($pub_payload, 'public');
     }
-    $log->("public /tariffs (no tariff_name) returned empty rows (count=" . ($pub_payload->{interval_count}//0) . ")");
+    $log->("public /tariffs (no tariff_name) incomplete.");
   }
 
-  # Nothing returned rows; log and return empty payload with 'public' source
-  $log->("No tariff rows found from customerTariffs or public /tariffs endpoints; returning empty payload.");
-  $pub_payload = {} unless defined $pub_payload && ref($pub_payload) eq 'HASH';
-  $pub_payload = _normalize_payload($pub_payload);
-  return ($pub_payload, 'public');
+  # Nothing complete; return normalized empty payload
+  $log->("No complete tariff rows found; returning empty payload.");
+  my $empty = _normalize_payload( {} );
+  return ($empty, 'public');
 }
 
 # --------------------------
-# Saves tariffs to JSON
+# Saves tariffs to JSON (atomic)
 # --------------------------
 sub save_tariffs_json {
   my ($cfg, $payload, $source, $start_iso, $end_iso) = @_;
@@ -525,7 +511,6 @@ sub save_tariffs_json {
   my $dir = $LBPDATADIR || '/opt/loxberry/data';
   eval { File::Path::make_path($dir) unless -d $dir; 1 } or return 0;
 
-  # Filenames: latest.json and a windowed file
   (my $start_safe = $start_iso) =~ s/[:+]/_/g;
   (my $end_safe   = $end_iso)   =~ s/[:+]/_/g;
   my $window_file = File::Spec->catfile($dir, "tariffs_${source}_${start_safe}_${end_safe}.json");
@@ -540,15 +525,14 @@ sub save_tariffs_json {
   };
 
   eval {
-    open my $fh, '>', $window_file or die "Cannot write $window_file: $!";
-    print $fh encode_json($doc);
-    close $fh;
-    chmod 0640, $window_file;
+    # atomic write via temp
+    my $tmp = "$latest_file.tmp.$$";
+    open my $fl, '>', $tmp or die "Cannot write $tmp: $!";
+    print $fl encode_json($doc); close $fl; chmod 0640, $tmp;
+    rename $tmp, $latest_file or die "Cannot rename $tmp to $latest_file: $!";
 
-    open my $fl, '>', $latest_file or die "Cannot write $latest_file: $!";
-    print $fl encode_json($doc);
-    close $fl;
-    chmod 0640, $latest_file;
+    open my $fh, '>', $window_file or die "Cannot write $window_file: $!";
+    print $fh encode_json($doc); close $fh; chmod 0640, $window_file;
     1;
   } or do {
     my $logfile = File::Spec->catfile($dir, 'fetch.log');
@@ -591,7 +575,7 @@ sub publish_tariffs_to_mqtt {
 }
 
 # --------------------------
-# EMS linking & helpers (must appear AFTER get_json_with_retry and fetch_window)
+# EMS linking & helpers
 # --------------------------
 sub ems_link_status {
   my ($cfg, $access, $redirect_uri) = @_;
@@ -665,14 +649,11 @@ sub try_ensure_linked {
 
 sub build_scheduled_window {
   # Build window for the "following day" (next-day 00:00 local -> +24h)
-  # Per EKZ API: dynamic tariffs are published until 18:00 for the following day,
-  # and the tariffs themselves cover the next day's 00:00..24:00 (96 intervals).
   my $now = localtime;
   my $tomorrow = $now + 24*3600;
   my $start = Time::Piece->strptime($tomorrow->strftime('%Y-%m-%d').' 00:00:00', '%Y-%m-%d %H:%M:%S');
   my $end = $start + 24*3600;
 
-  # Keep local timezone offset in the ISO strings (e.g. +01:00)
   my $off = $now->strftime('%z');            # e.g. +0100
   $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/; # +0100 -> +01:00
 
