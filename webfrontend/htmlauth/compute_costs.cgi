@@ -2,294 +2,337 @@
 use strict;
 use warnings;
 
-use CGI::Carp qw(fatalsToBrowser);
 use CGI;
 use JSON::PP;
 use File::Spec;
+use Time::Local;
 use POSIX qw(strftime);
-use Time::Local qw(timegm);
-use Time::Piece;
 use FindBin;
 use LoxBerry::System;
-use LoxBerry::Log;
-
 require "$FindBin::Bin/common.pl";
 
-our ($lbpdatadir, $lbpurl, $lbptemplatedir, $lbplogdir);
+# SDK globals
+our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
-# --------------------------
-# CGI and logging setup
-# --------------------------
 my $q = CGI->new;
-my $nopublish = ($q->param('nopublish') // '') eq '1' ? 1 : 0;
+print $q->header('application/json; charset=utf-8');
 
-my $log = LoxBerry::Log->new(
-  name      => 'compute',
-  filename  => "$lbplogdir/compute.log",
-  append    => 1,
-  loglevel  => 6,
-  addtime   => 1,
-  stderr    => 0,
-  nosession => 1,
-);
+# Allow UI to compute without publishing (to avoid duplicate MQTT)
+my $nopublish = ($q->param('nopublish') // '') ne '' ? 1 : 0;
 
-LOGSTART("compute_costs.cgi started");
+# ---- helpers ----
 
-# --------------------------
-# Helpers
-# --------------------------
-sub _tz_offset_colon {
-  my $z = strftime('%z', localtime);   # e.g. +0100 or -0530
-  $z =~ s/(\+|-)(\d{2})(\d{2})/$1$2:$3/;
-  return $z;
-}
-
-sub _iso_to_epoch {
-  my ($iso) = @_;
-  return undef unless defined $iso;
-  # Accept formats with Z or ±HH:MM
-  if ($iso =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(Z|([+\-])(\d{2}):(\d{2}))$/) {
-    my ($Y,$M,$D,$h,$m,$s,$z,$sign,$oh,$om) = ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10);
-    # Build a UTC epoch from local components then subtract offset to get real UTC
-    my $utc_epoch = timegm($s+0, $m+0, $h+0, $D+0, $M-1, $Y-1900);
-    my $offset_secs = 0;
-    if (defined $z && $z ne 'Z') {
-      $offset_secs = ($oh * 3600) + ($om * 60);
-      $offset_secs *= ($sign eq '+') ? 1 : -1;
-    }
-    return $utc_epoch - $offset_secs;
+sub read_latest_json {
+  my $path = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
+  unless (-f $path) {
+    return ($path, undef, { error => "not_found", message => "No tariffs_latest.json in $lbpdatadir" });
   }
-  return undef;
+  open my $fh, '<', $path or return ($path, undef, { error => "open_failed", message => "Cannot open $path: $!" });
+  local $/ = undef;
+  my $raw = <$fh>;
+  close $fh;
+  my $doc = eval { decode_json($raw) };
+  if (!$doc) {
+    return ($path, undef, { error => "invalid_json", message => "Could not parse tariffs_latest.json" });
+  }
+  return ($path, $doc, undef);
 }
 
-sub _norm_unit_name {
-  my ($u) = @_;
-  return 'CHF_kWh' if defined $u && lc($u) eq 'chf_kwh';
-  return 'CHF_M'   if defined $u && lc($u) eq 'chf_m';
-  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]?kwh$/;
-  return 'CHF_M'   if defined $u && lc($u) =~ /^chf[_-]?m$/;
-  return $u // 'CHF_kWh';
-}
-
-sub _value_for_unit {
-  my ($arr, $unit) = @_;
-  $arr ||= [];
+sub get_unit_value {
+  my ($arr, $wanted) = @_;
+  return 0 unless $arr && ref($arr) eq 'ARRAY';
   for my $e (@$arr) {
     next unless ref($e) eq 'HASH';
-    my $u = _norm_unit_name($e->{unit});
-    if ($u eq $unit) {
+    my $u = $e->{unit};
+    next unless defined $u;
+    if (lc($u) eq lc($wanted)) {
       my $v = $e->{value};
-      $v = 0 unless defined $v;
-      return $v + 0;
+      return 0 + ($v // 0);
     }
   }
   return 0;
 }
 
-# Calculate total CHF_kWh for an interval row:
-# Prefer electricity+grid+regional; else integrated+regional if electricity/grid missing or both 0.
-sub _interval_total_chf_kwh {
-  my ($row) = @_;
-  return 0 unless $row && ref($row) eq 'HASH';
-  my $e_kwh = _value_for_unit($row->{electricity}, 'CHF_kWh');
-  my $g_kwh = _value_for_unit($row->{grid}, 'CHF_kWh');
-  my $r_kwh = _value_for_unit($row->{regional_fees}, 'CHF_kWh');
-  my $i_kwh = _value_for_unit($row->{integrated}, 'CHF_kWh');
+sub days_in_month {
+  my ($y, $m) = @_; # y=YYYY, m=1..12
+  return 31 if $m =~ /^(1|3|5|7|8|10|12)$/;
+  return 30 if $m =~ /^(4|6|9|11)$/;
+  my $leap = ($y % 400 == 0) || ($y % 4 == 0 && $y % 100 != 0);
+  return $leap ? 29 : 28;
+}
 
-  if ($e_kwh > 0 || $g_kwh > 0) {
-    return ($e_kwh + $g_kwh + $r_kwh);
+sub parse_ymdh {
+  my ($iso) = @_;
+  my ($Y,$m,$d,$H) = $iso =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2})/;
+  return ($Y+0,$m+0,$d+0,$H+0);
+}
+
+sub hour_start_from {
+  my ($iso) = @_;
+  my ($date,$time,$off) = $iso =~ /^([^T]+)T([^+\-Z]+)([+\-]\d{2}:\d{2}|Z)?$/;
+  $off = '+00:00' if !defined $off || $off eq 'Z';
+  my ($Y,$M,$D,$h) = parse_ymdh($iso);
+  return sprintf('%04d-%02d-%02dT%02d:00:00%s', $Y,$M,$D,$h,$off);
+}
+
+# Prefer E+G+R; else I (+R) to avoid double counting
+sub kwh_total_for_block {
+  my ($b) = @_;
+  my $e_kwh = get_unit_value($b->{electricity},    'CHF_kWh');
+  my $g_kwh = get_unit_value($b->{grid},           'CHF_kWh');
+  my $r_kwh = get_unit_value($b->{regional_fees},  'CHF_kWh');
+  if ($e_kwh || $g_kwh) {
+    return $e_kwh + $g_kwh + $r_kwh;
   } else {
-    return ($i_kwh + $r_kwh);
+    my $i_kwh = get_unit_value($b->{integrated}, 'CHF_kWh');
+    return $i_kwh + $r_kwh;
   }
 }
 
-# --------------------------
-# Load config and latest tariffs
-# --------------------------
-my $cfg = load_cfg();
+# Prefer integrated CHF_M + regional CHF_M; else E+G+R CHF_M
+sub monthly_M_total_for_block {
+  my ($b) = @_;
+  my $i_m = get_unit_value($b->{integrated},     'CHF_M');
+  my $r_m = get_unit_value($b->{regional_fees},  'CHF_M');
+  if ($i_m) {
+    return $i_m + $r_m;
+  } else {
+    my $e_m = get_unit_value($b->{electricity},  'CHF_M');
+    my $g_m = get_unit_value($b->{grid},         'CHF_M');
+    return $e_m + $g_m + $r_m;
+  }
+}
 
-my $latest_path = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
-my $doc;
-eval {
-  open my $fh, '<', $latest_path or die "Cannot read $latest_path: $!";
-  local $/ = undef;
-  my $raw = <$fh>;
-  close $fh;
-  $doc = decode_json($raw);
-  1;
-} or do {
-  my $err = $@ || 'Unknown error';
-  LOGERR("Failed to load tariffs_latest.json: $err");
-  print $q->header('application/json; charset=utf-8');
-  print JSON::PP->new->canonical(1)->encode({ error => 'no_latest_tariffs', message => "Cannot read $latest_path: $err" });
+# MQTT publish: prefer Net::MQTT::Simple when possible; otherwise use mosquitto_pub
+sub mqtt_publish {
+  my ($cfg, $topic, $payload_json) = @_;
+  return 0 unless $cfg->{mqtt_enabled};
+
+  my $host = $cfg->{mqtt_host} // 'localhost';
+  my $port = $cfg->{mqtt_port} // 1883;
+  my $user = $cfg->{mqtt_username} // '';
+  my $pass = $cfg->{mqtt_password} // '';
+
+  # Try Perl MQTT library if available and no auth required
+  my $ok = 0;
+  if ($user eq '') {
+    eval {
+      require Net::MQTT::Simple;
+      Net::MQTT::Simple->import();
+      my $broker = "$host:$port";
+      my $mqtt = Net::MQTT::Simple->new($broker);
+      $mqtt->publish($topic => $payload_json);
+      $ok = 1;
+      1;
+    } or do {
+      # library not present or publish failed — fallback to mosquitto_pub below
+      $ok = 0;
+    };
+  }
+
+  if (!$ok) {
+    # fallback to mosquitto_pub CLI (keeps existing behaviour for auth/compat)
+    my $tmp = File::Spec->catfile($lbpdatadir, 'mqtt_payload.tmp.json');
+    open my $tfh, '>', $tmp or return 0;
+    print $tfh $payload_json;
+    close $tfh;
+
+    my @cmd = ('mosquitto_pub', '-h', $host, '-p', $port, '-t', $topic, '-f', $tmp, '-r');
+    if (defined $user && $user ne '') { push @cmd, ('-u', $user); }
+    if (defined $pass && $pass ne '') { push @cmd, ('-P', $pass); }
+
+    my $rc = system(@cmd);
+    unlink $tmp;
+    $ok = ($rc == 0) ? 1 : 0;
+  }
+
+  return $ok ? 1 : 0;
+}
+
+# ---- main ----
+
+my $cfg = eval { load_cfg() } // {};
+
+my ($src_path, $doc, $err) = read_latest_json();
+if ($err) {
+  print JSON::PP->new->encode($err);
   exit 0;
-};
+}
 
-my $rows = $doc->{prices} // $doc->{rows} // [];
-my $pub_ts = $doc->{publication_timestamp} // (strftime('%Y-%m-%dT%H:%M:%S', localtime) . _tz_offset_colon());
+my $rows = $doc->{prices};
+$rows = $doc->{rows} if !defined $rows;
+$rows ||= [];
 
-# --------------------------
-# Build intervals (15-minute)
-# --------------------------
+my @sorted = sort {
+  ($a->{start_timestamp} // '') cmp ($b->{start_timestamp} // '')
+} grep { ref $_ eq 'HASH' && $_->{start_timestamp} } @$rows;
+
 my @intervals;
-for my $r (@$rows) {
-  next unless ref($r) eq 'HASH';
-  my $start = $r->{start_timestamp};
-  my $end   = $r->{end_timestamp};
+my %hour_groups;
 
-  my $interval = {
-    start_timestamp => $start,
-    end_timestamp   => $end,
-    # Keep original blocks, but ensure order and units normalized
-    electricity     => [
-      { unit => 'CHF_M',   value => _value_for_unit($r->{electricity}, 'CHF_M') },
-      { unit => 'CHF_kWh', value => _value_for_unit($r->{electricity}, 'CHF_kWh') },
-    ],
-    grid            => [
-      { unit => 'CHF_M',   value => _value_for_unit($r->{grid}, 'CHF_M') },
-      { unit => 'CHF_kWh', value => _value_for_unit($r->{grid}, 'CHF_kWh') },
-    ],
-    integrated      => [
-      { unit => 'CHF_M',   value => _value_for_unit($r->{integrated}, 'CHF_M') },
-      { unit => 'CHF_kWh', value => _value_for_unit($r->{integrated}, 'CHF_kWh') },
-    ],
-    regional_fees   => [
-      { unit => 'CHF_M',   value => _value_for_unit($r->{regional_fees}, 'CHF_M') },
-      { unit => 'CHF_kWh', value => _value_for_unit($r->{regional_fees}, 'CHF_kWh') },
-    ],
-    total_chf_kwh   => _interval_total_chf_kwh($r),
+for my $b (@sorted) {
+  my $start = $b->{start_timestamp} // next;
+  my $end   = $b->{end_timestamp}   // '';
+
+  my ($Y,$M) = (parse_ymdh($start))[0,1];
+  my $hours_in_month = days_in_month($Y,$M) * 24;
+
+  my $kwh_total      = kwh_total_for_block($b);
+  my $monthly_m      = monthly_M_total_for_block($b);
+  my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
+  my $sum_total      = $kwh_total + $fixed_per_hour;
+
+  my $hour_key = hour_start_from($start);
+
+  push @intervals, {
+    start_timestamp  => $start,
+    end_timestamp    => $end,
+    chf_per_kwh_sum  => $kwh_total,
+    chf_m_per_hour   => $fixed_per_hour,
+    total_chf        => $sum_total,
+    month_hours_used => $hours_in_month,
   };
 
-  push @intervals, $interval;
+  $hour_groups{$hour_key} ||= { n => 0, kwh_sum => 0, fixed_sum => 0, total_sum => 0 };
+  $hour_groups{$hour_key}{n}         += 1;
+  $hour_groups{$hour_key}{kwh_sum}   += $kwh_total;
+  $hour_groups{$hour_key}{fixed_sum} += $fixed_per_hour;
+  $hour_groups{$hour_key}{total_sum} += $sum_total;
 }
 
-# --------------------------
-# Build hourly averages
-# --------------------------
-# Group intervals by their hour (epoch-aligned)
-my %hour_buckets; # key: hour_start_epoch, value: { hour_start => ISO, totals => [ ... ] }
-for my $it (@intervals) {
-  my $start_iso = $it->{start_timestamp};
-  my $epoch = _iso_to_epoch($start_iso);
-  next unless defined $epoch;
-  my $hour_epoch = int($epoch / 3600) * 3600;
-
-  # Build local hour_start ISO with timezone offset
-  my $hs_local = strftime('%Y-%m-%dT%H:00:00', localtime($hour_epoch));
-  my $off = strftime('%z', localtime($hour_epoch)); $off =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
-  my $hour_iso = $hs_local . $off;
-
-  $hour_buckets{$hour_epoch} ||= { hour_start => $hour_iso, totals => [] };
-  push @{ $hour_buckets{$hour_epoch}{totals} }, ($it->{total_chf_kwh} // 0) + 0;
+my @hourly;
+for my $hk (sort keys %hour_groups) {
+  my $g = $hour_groups{$hk};
+  my $n = $g->{n} || 1;
+  push @hourly, {
+    hour_start          => $hk,
+    avg_total_chf       => $g->{total_sum} / $n,
+    avg_chf_per_kwh_sum => $g->{kwh_sum}   / $n,
+    avg_chf_m_per_hour  => $g->{fixed_sum} / $n,
+    intervals_count     => $n,
+  };
 }
 
-# Calculate avg/min/max per hour
-my @hourly = sort {
-  ($a->{hour_start} // '') cmp ($b->{hour_start} // '')
-} map {
-  my $hour_start = $hour_buckets{$_}{hour_start};
-  my $totals     = $hour_buckets{$_}{totals} || [];
-  my $count      = scalar(@$totals);
-  my ($sum, $min, $max) = (0, undef, undef);
-  for my $v (@$totals) {
-    $sum += $v;
-    $min = (!defined $min || $v < $min) ? $v : $min;
-    $max = (!defined $max || $v > $max) ? $v : $max;
-  }
-  my $avg = $count > 0 ? ($sum / $count) : undef;
-  {
-    hour_start    => $hour_start,
-    intervals     => $count,
-    avg_total_chf => (defined $avg ? 0.0 + $avg : undef),
-    min_total_chf => (defined $min ? 0.0 + $min : undef),
-    max_total_chf => (defined $max ? 0.0 + $max : undef),
-  }
-} keys %hour_buckets;
+my $pub_ts = $doc->{publication_timestamp} // '';
+
+my $intervals_msg = {
+  publication_timestamp => $pub_ts,
+  interval_count        => scalar(@intervals),
+  intervals             => \@intervals,
+};
+my $hourly_msg = {
+  publication_timestamp => $pub_ts,
+  hour_count            => scalar(@hourly),
+  hourly                => \@hourly,
+};
+
+my $json_intervals = JSON::PP->new->canonical(1)->encode($intervals_msg);
+my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
 
 # --------------------------
-# Build 24-hour relative forecast (now + 0..23h)
+# Relative 24-hour view (now +0 .. now +23) — epoch-aligned matching
 # --------------------------
-my %hour_epoch_map = map {
-  my $e = _iso_to_epoch($_->{hour_start});
-  my $he = (defined $e) ? int($e / 3600) * 3600 : undef;
-  (defined $he) ? ($he => $_) : ();
-} @hourly;
+# Parse ISO timestamp with offset into a UTC epoch (seconds since epoch).
+sub _iso_to_epoch {
+  my ($iso) = @_;
+  return undef unless defined $iso;
+  # Match:  YYYY-MM-DDTHH:MM:SS(+|-)HH:MM  or ...Z
+  if ($iso =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(Z|([+\-])(\d{2}):(\d{2}))?$/) {
+    my ($Y,$M,$D,$h,$m,$s,$z, $sign, $oh, $om) = ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10);
+    $Y += 0; $M += 0; $D += 0; $h += 0; $m += 0; $s += 0;
+    # timegm expects (sec,min,hour,day,mon-1,year-1900)
+    my $utc_epoch = timegm($s, $m, $h, $D, $M-1, $Y-1900);
+    my $offset_secs = 0;
+    if (defined $z && $z ne 'Z' && defined $sign && defined $oh) {
+      $offset_secs = ($oh * 3600) + ($om * 60);
+      $offset_secs *= ($sign eq '+') ? 1 : -1;
+    }
+    # The ISO time represents local time with offset; UTC epoch = timegm(local) - offset
+    return $utc_epoch - $offset_secs;
+  }
+  return undef;
+}
+
+# Build epoch -> hourly entry map (hour-start epoch)
+my %hour_epoch_map;
+for my $h (@hourly) {
+  next unless ref $h eq 'HASH' && defined $h->{hour_start};
+  my $iso = $h->{hour_start};
+  my $e = _iso_to_epoch($iso);
+  next unless defined $e;
+  # Normalize to hour-start epoch (round down to hour)
+  my $hour_epoch = int($e / 3600) * 3600;
+  $hour_epoch_map{$hour_epoch} = $h unless exists $hour_epoch_map{$hour_epoch};
+}
 
 my @relative;
 for my $off (0..23) {
   my $t = time + $off * 3600;
   my $target_hour_epoch = int($t / 3600) * 3600;
   my $entry = $hour_epoch_map{$target_hour_epoch};
-  my ($hs, $val, $cnt);
+  my ($hs, $val);
   if ($entry) {
     $hs  = $entry->{hour_start};
-    $val = $entry->{avg_total_chf};
-    $cnt = $entry->{intervals};
+    $val = defined $entry->{avg_total_chf} ? ($entry->{avg_total_chf} + 0) : undef;
   } else {
+    # Fallback: format local hour-start (append local timezone offset)
     my $hs_local = strftime('%Y-%m-%dT%H:00:00', localtime($t));
     my $offstr = strftime('%z', localtime($t)); $offstr =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
     $hs = $hs_local . $offstr;
     $val = undef;
-    $cnt = 0;
   }
-  push @relative, { offset => $off, hour_start => $hs, intervals => $cnt, avg_total_chf => $val };
-}
-
-# --------------------------
-# MQTT publish (unless nopublish=1)
-# --------------------------
-my $published_intervals = 0;
-my $published_hourly    = 0;
-if (!$nopublish && $cfg->{mqtt_enabled}) {
-  my $intervals_msg = {
-    publication_timestamp => $pub_ts,
-    interval_count        => scalar(@intervals),
-    intervals             => \@intervals,
-  };
-  my $hourly_msg = {
-    publication_timestamp => $pub_ts,
-    hours_count           => scalar(@hourly),
-    hourly                => \@hourly,
-    relative              => \@relative,
-  };
-
-  eval {
-    publish_mqtt($cfg, $cfg->{mqtt_topic_intervals}, $intervals_msg);
-    $published_intervals = 1;
-    1;
-  } or do {
-    LOGERR("MQTT publish intervals failed: $@");
-  };
-
-  eval {
-    publish_mqtt($cfg, $cfg->{mqtt_topic_hourly}, $hourly_msg);
-    $published_hourly = 1;
-    1;
-  } or do {
-    LOGERR("MQTT publish hourly failed: $@");
+  push @relative, {
+    offset => $off,
+    hour_start => $hs,
+    avg_total_chf => $val,
   };
 }
 
-# --------------------------
-# Output response
-# --------------------------
-print $q->header('application/json; charset=utf-8');
+my $relative_msg = {
+  publication_timestamp => $pub_ts,
+  reference_time        => strftime('%Y-%m-%dT%H:%M:%S', localtime(time)),
+  relative              => \@relative,
+};
+my $json_relative = JSON::PP->new->canonical(1)->encode($relative_msg);
+
+# Topics (new dedicated, with backward-compatible fallback)
+my $topic_intervals = $cfg->{mqtt_topic_intervals}
+                   // $cfg->{mqtt_topic_raw}
+                   // 'ekz/ems/tariffs/intervals';
+my $topic_hourly    = $cfg->{mqtt_topic_hourly}
+                   // $cfg->{mqtt_topic_summary}
+                   // 'ekz/ems/tariffs/hourly';
+my $topic_relative  = $cfg->{mqtt_topic_relative} // 'ekz/ems/tariffs/relative';
+
+my ($pub_intervals_ok, $pub_hourly_ok) = (0, 0);
+my $pub_relative_ok = 0;
+if (!$nopublish) {
+  $pub_intervals_ok = mqtt_publish($cfg, $topic_intervals, $json_intervals) ? 1 : 0;
+  $pub_hourly_ok    = mqtt_publish($cfg, $topic_hourly,    $json_hourly)    ? 1 : 0;
+
+  # Publish relative 24-hour view as well
+  $pub_relative_ok = mqtt_publish($cfg, $topic_relative, $json_relative) ? 1 : 0;
+}
 
 my $out = {
-  publication_timestamp => $pub_ts,
-  interval_count        => scalar(@intervals),
-  hours_count           => scalar(@hourly),
-  intervals             => \@intervals,
-  hourly                => \@hourly,
-  relative              => \@relative,
-  mqtt_published        => {
-    intervals => JSON::PP::bool($published_intervals ? 1 : 0),
-    hourly    => JSON::PP::bool($published_hourly    ? 1 : 0),
+  source_file             => $src_path,
+  publication_timestamp   => $pub_ts,
+  interval_count_input    => scalar(@sorted),
+  interval_count_output   => scalar(@intervals),
+  hour_count_output       => scalar(@hourly),
+  intervals               => \@intervals,
+  hourly                  => \@hourly,
+  mqtt => {
+    enabled                  => !!($cfg->{mqtt_enabled}),
+    intervals_topic          => $topic_intervals,
+    hourly_topic             => $topic_hourly,
+    publish_intervals_ok     => $pub_intervals_ok ? JSON::PP::true : JSON::PP::false,
+    publish_hourly_ok        => $pub_hourly_ok    ? JSON::PP::true : JSON::PP::false,
+    skipped_due_to_nopublish => $nopublish ? JSON::PP::true : JSON::PP::false,
+    relative_topic           => $topic_relative,
+    publish_relative_ok      => $pub_relative_ok ? JSON::PP::true : JSON::PP::false,
   },
 };
 
 print JSON::PP->new->pretty(1)->encode($out);
-
-LOGEND("compute_costs.cgi finished");
-
 exit 0;
