@@ -11,6 +11,10 @@
   "timezone": "Europe/Zurich",
 
   "fallback_tariff_name": "integrated_400D",
+  "fallback_regional_fee_kwh": 0.0016,
+  "fallback_zero_regional_when_applied": true,
+  "publish_grace_minutes": 5,
+
   "retries": 3,
   "token_store_path": "/opt/loxberry/data/plugins/ekz_plugin/tokens.json",
 
@@ -24,7 +28,5 @@
   "mqtt_topic_summary": "ekz/ems/tariffs/now_plus_24h",
   "mqtt_topic_intervals": "ekz/ems/tariffs/intervals",
   "mqtt_topic_hourly": "ekz/ems/tariffs/hourly",
-
-  "fetch_schedule": "24",
-  "publish_grace_minutes": 5
+  "fetch_schedule": "24"
 }
