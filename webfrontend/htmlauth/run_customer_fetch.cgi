@@ -1,39 +1,66 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-
+use CGI::Carp qw(fatalsToBrowser);
 use CGI;
-use LoxBerry::System;
+use JSON::PP;
+use Time::Piece;
+use POSIX qw(strftime);
+use File::Spec;
 use FindBin;
 require "$FindBin::Bin/common.pl";
 
-our ($lbpdatadir, $lbpurl, $lbptemplatedir);
+our ($lbpdatadir);
 
 my $q = CGI->new;
 print $q->header('application/json; charset=utf-8');
 
 my $cfg = load_cfg();
-my ($start_iso, $end_iso) = build_scheduled_window();
 
-# Ensure linked
-my ($link_status, $link_url) = ensure_linked($cfg);
-if ($link_status ne 'linked') {
-  print encode_json({ error => 'link_required', linking_process_redirect_uri => $link_url });
-  exit;
+# Use configured timezone for window building
+if ($cfg->{timezone}) {
+  local $ENV{TZ} = $cfg->{timezone};
 }
 
-# Customer-only fetch
-my $access = ensure_access_token($cfg);
-my %hdr = ( Authorization => "Bearer $access", accept => "application/json" );
-my $base = $cfg->{api_base};
+# Build TODAY (00:00..23:59:59) unless next-day is explicitly requested via ?nextday=1
+my $nextday = ($q->param('nextday') // '') eq '1' ? 1 : 0;
 
-my $payload = get_json_with_retry(
-  "$base/customerTariffs", \%hdr,
-  { ems_instance_id => $cfg->{ems_instance_id}, start_timestamp => $start_iso, end_timestamp => $end_iso },
-  int($cfg->{retries})
-);
+my ($start_iso, $end_iso);
+my $now = localtime(time);
 
-print encode_json({
-  from => $start_iso, to => $end_iso, source => 'customer',
-  rows => $payload->{rows} // [], interval_count => $payload->{interval_count} // 0
-});
+if ($nextday) {
+  ($start_iso, $end_iso) = build_scheduled_window();
+} else {
+  my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
+  my $end   = $start + 24*3600 - 1;
+  my $off   = $now->strftime('%z'); $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/;
+  $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+  $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+}
+
+# Fetch customer tariffs window
+my $payload;
+eval {
+  $payload = fetch_customer_tariffs_window($cfg, $start_iso, $end_iso);
+  1;
+} or do {
+  my $err = $@ || 'unknown';
+  print encode_json({ error => 'customer_fetch_failed', message => $err });
+  exit 0;
+};
+
+# Normalize and respond, with explicit source=customer
+my $rows = $payload->{rows} // $payload->{prices} // [];
+my $doc = {
+  publication_timestamp => strftime('%Y-%m-%dT%H:%M:%S', localtime) . do {
+    my $z = strftime('%z', localtime); $z =~ s/(\+|-)(\d{2})(\d{2})/$1$2:$3/; $z;
+  },
+  source                => 'customer',
+  from                  => $start_iso,
+  to                    => $end_iso,
+  prices                => $rows,
+  rows                  => $rows,
+  interval_count        => scalar(@$rows),
+};
+
+print JSON::PP->new->pretty(1)->encode($doc);
