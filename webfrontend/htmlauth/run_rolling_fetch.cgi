@@ -113,31 +113,23 @@ sub write_json_file {
 }
 # --------------------------------------
 
-# Helper: calendar-day equality (localtime)
 sub same_calendar_day {
   my ($t1, $t2) = @_;
   return 0 unless defined $t1 && defined $t2;
   my @a = localtime($t1);
   my @b = localtime($t2);
-  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]); # year, month, mday
+  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]);
 }
 
 my $ok = eval {
   my $cfg = load_cfg();
 
-  # allow force via query param: run_rolling_fetch.cgi?force=1 will bypass schedule checks
-  my $force = ($q->param('force') // '') eq '1' ? 1 : 0;
-
-  # Enforce schedule guard BEFORE performing any fetching to avoid accidental downloads.
-  # Read configured schedule (values: '1','2','12','24') - default to '1' (18:00) if unset.
+  my $force    = ($q->param('force') // '') eq '1' ? 1 : 0;
   my $schedule = $cfg->{fetch_schedule} // '1';
 
-  # Path to record last successful fetch
   my $last_file = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
 
   if (!$force) {
-    # Only apply the "already fetched today" guard for strictly once-per-day schedules.
-    # For other schedules (2, 12, 24) we rely on the hour-of-day check below.
     if (($schedule // '') eq '1') {
       if (-f $last_file) {
         if (open my $lf, '<', $last_file) {
@@ -147,30 +139,21 @@ my $ok = eval {
           my $j = eval { decode_json($raw) } || {};
           my $last_ts = $j->{last_success_epoch};
           if (defined $last_ts && same_calendar_day(time, $last_ts)) {
-            LOGINF("Skipped fetch: already fetched today (once-per-day schedule; last_success_epoch=%d)", $last_ts);
+            LOGINF("Skipped fetch: already fetched today");
             print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'already_fetched_today' });
             return 1;
           }
-        } else {
-          LOGWARN("Could not open last_fetch file '%s' for reading: %s", $last_file, $!);
         }
       }
     }
 
-    # Ensure current local hour matches configured schedule
-    my $hour = (localtime(time))[2]; # 0..23
+    my $hour = (localtime(time))[2];
     my $allowed = 0;
-    if ($schedule eq '1') {
-      $allowed = ($hour == 18) ? 1 : 0;
-    } elsif ($schedule eq '2') {
-      $allowed = ($hour == 6 || $hour == 18) ? 1 : 0;
-    } elsif ($schedule eq '12') {
-      $allowed = ($hour % 2 == 0) ? 1 : 0; # even hours
-    } elsif ($schedule eq '24') {
-      $allowed = 1; # any hour
-    } else {
-      $allowed = 0; # unknown/disabled
-    }
+    if ($schedule eq '1')      { $allowed = ($hour >= 18) ? 1 : 0; }
+    elsif ($schedule eq '2')   { $allowed = ($hour == 6 || $hour == 18) ? 1 : 0; }
+    elsif ($schedule eq '12')  { $allowed = ($hour % 2 == 0) ? 1 : 0; }
+    elsif ($schedule eq '24')  { $allowed = 1; }
+    else                       { $allowed = 0; }
 
     unless ($allowed) {
       LOGINF("Skipped fetch: not scheduled now (hour=$hour schedule=$schedule)");
@@ -181,39 +164,35 @@ my $ok = eval {
     LOGINF("Force fetch requested via ?force=1");
   }
 
- 
-  # Decide whether this run should fetch "today" (current day) or "next day".
-  # Rules:
-  # - ?today=1 forces fetching today.
-  # - ?force=1 before 18:00 is treated as a manual request and will fetch today.
-  # - Interactive web requests (coming from a browser, i.e. REMOTE_ADDR is set) with no params
-  #   before 18:00 will fetch today (convenience for manual Fetch Now).
-  # - Cron/automated runs (no REMOTE_ADDR) without params will NOT fetch next-day before 18:00.
-  my $now_hour = (localtime(time))[2]; # 0..23
-  # Consider request interactive if REMOTE_ADDR (IP) or HTTP_USER_AGENT exists.
-  # Some server setups do not populate REMOTE_ADDR for proxied/internal requests,
-  # but browsers always send a User-Agent header which appears as HTTP_USER_AGENT.
-  my $is_interactive =
-       (defined $ENV{REMOTE_ADDR} && $ENV{REMOTE_ADDR} ne '')
-    || (defined $ENV{HTTP_USER_AGENT} && $ENV{HTTP_USER_AGENT} ne '');
-  my $want_today = 0;
-  if ($q->param('today')) {
-    $want_today = 1;
-  } elsif ($force && $now_hour < 18) {
-    # forced manual run before 18:00 -> treat as today's fetch
-    $want_today = 1;
-  } elsif (!$force && $is_interactive && $now_hour < 18) {
-    # interactive browser request before 18:00 with no params -> fetch today
-    $want_today = 1;
-  }
+  # Decide window: TODAY before 18:00, NEXT-DAY at/after 18:00.
+  my $now_epoch = time();
+  my $now_hour  = (localtime($now_epoch))[2];
 
-  if (!$want_today) {
-    # Not fetching today: enforce "do not fetch next-day before 18:00"
-    if ($now_hour < 18) {
-      LOGINF("Skipping fetch for next-day: not published yet (local hour=%d)", $now_hour);
-      print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_published_yet', hour => $now_hour });
-      return 1;
-    }
+  my ($start_iso, $end_iso);
+  my $now = localtime($now_epoch);
+
+  if ($q->param('today')) {
+    # Explicit override
+    my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
+    my $end   = $start + 24*3600 - 1; # exclusive end
+    my $off = $now->strftime('%z'); $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/;
+    $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+    $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+    LOGINF("Building TODAY window via ?today=1");
+  } elsif ($now_hour < 18) {
+    # Non-interactive default before 18:00: fetch TODAY
+    my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
+    my $end   = $start + 24*3600 - 1; # exclusive end
+    my $off = $now->strftime('%z'); $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/;
+    $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+    $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+    LOGINF("Building TODAY window (non-interactive default before 18:00)");
+  } else {
+    # At/after 18:00: next day
+    my ($s, $e) = build_scheduled_window();
+    $start_iso = $s;
+    $end_iso   = $e;
+    LOGINF("Building NEXT-DAY window (>=18:00)");
   }
 
   # ---- existing link / auth checks ----
