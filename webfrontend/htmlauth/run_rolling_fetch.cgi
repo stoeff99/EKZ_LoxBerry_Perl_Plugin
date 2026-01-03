@@ -113,24 +113,36 @@ sub write_json_file {
 }
 # --------------------------------------
 
+# Helper: calendar-day equality (localtime)
 sub same_calendar_day {
   my ($t1, $t2) = @_;
   return 0 unless defined $t1 && defined $t2;
   my @a = localtime($t1);
   my @b = localtime($t2);
-  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]);
+  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]); # year, month, mday
 }
 
 my $ok = eval {
   my $cfg = load_cfg();
 
+  # Ensure all localtime operations use the configured timezone (e.g., Europe/Zurich)
+  if ($cfg->{timezone}) {
+    local $ENV{TZ} = $cfg->{timezone};
+  }
+
+  # allow force via query param: run_rolling_fetch.cgi?force=1 will bypass schedule checks
   my $force      = ($q->param('force') // '') eq '1' ? 1 : 0;
   my $want_today = ($q->param('today') // '') eq '1' ? 1 : 0;
-  my $schedule   = $cfg->{fetch_schedule} // '1';
 
+  # Enforce schedule guard BEFORE performing any fetching to avoid accidental downloads.
+  # Read configured schedule (values: '1','2','12','24') - default to '1' (18:00) if unset.
+  my $schedule = $cfg->{fetch_schedule} // '1';
+
+  # Path to record last successful fetch
   my $last_file = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
 
   if (!$force) {
+    # Only apply the "already fetched today" guard for strictly once-per-day schedules.
     if (($schedule // '') eq '1') {
       if (-f $last_file) {
         if (open my $lf, '<', $last_file) {
@@ -140,21 +152,30 @@ my $ok = eval {
           my $j = eval { decode_json($raw) } || {};
           my $last_ts = $j->{last_success_epoch};
           if (defined $last_ts && same_calendar_day(time, $last_ts)) {
-            LOGINF("Skipped fetch: already fetched today");
+            LOGINF("Skipped fetch: already fetched today (once-per-day schedule; last_success_epoch=%d)", $last_ts);
             print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'already_fetched_today' });
             return 1;
           }
+        } else {
+          LOGWARN("Could not open last_fetch file '%s' for reading: %s", $last_file, $!);
         }
       }
     }
 
-    my $hour = (localtime(time))[2];
+    # Ensure current local hour matches configured schedule
+    my $hour = (localtime(time))[2]; # 0..23
     my $allowed = 0;
-    if ($schedule eq '1')      { $allowed = ($hour >= 18) ? 1 : 0; }
-    elsif ($schedule eq '2')   { $allowed = ($hour == 6 || $hour == 18) ? 1 : 0; }
-    elsif ($schedule eq '12')  { $allowed = ($hour % 2 == 0) ? 1 : 0; }
-    elsif ($schedule eq '24')  { $allowed = 1; }
-    else                       { $allowed = 0; }
+    if ($schedule eq '1') {
+      $allowed = ($hour >= 18) ? 1 : 0;   # allow any time after 18:00
+    } elsif ($schedule eq '2') {
+      $allowed = ($hour == 6 || $hour == 18) ? 1 : 0;
+    } elsif ($schedule eq '12') {
+      $allowed = ($hour % 2 == 0) ? 1 : 0; # even hours
+    } elsif ($schedule eq '24') {
+      $allowed = 1; # any hour
+    } else {
+      $allowed = 0; # unknown/disabled
+    }
 
     unless ($allowed) {
       LOGINF("Skipped fetch: not scheduled now (hour=$hour schedule=$schedule)");
@@ -165,35 +186,42 @@ my $ok = eval {
     LOGINF("Force fetch requested via ?force=1");
   }
 
-  # Decide window: TODAY before 18:00, NEXT-DAY at/after 18:00.
+  # Decide whether this run should fetch "today" (current day) or "next day".
+  # Rules:
+  # - ?today=1 forces fetching today.
+  # - ?force=1 before 18:00 is treated as a manual request and will fetch today.
+  # - before 18:00 default to today; at/after 18:00 default to next-day.
   my $now_epoch = time();
-  my $now_hour  = (localtime($now_epoch))[2];
+  my $now_hour  = (localtime($now_epoch))[2]; # in configured timezone
+
+  if (!$want_today) {
+    if ($force && $now_hour < 18) {
+      $want_today = 1;
+    } elsif ($now_hour < 18) {
+      $want_today = 1;
+    }
+  }
 
   my ($start_iso, $end_iso);
   my $now = localtime($now_epoch);
 
   if ($want_today) {
-    # Explicit override
+    LOGINF("Building TODAY window (00:00..24:00 local)");
     my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
-    my $end   = $start + 24*3600 - 1; # exclusive end
-    my $off = $now->strftime('%z'); $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/;
+    my $end   = $start + 24*3600 - 1;  # exclusive end to avoid 97 rows
+    my $off = $now->strftime('%z');            # e.g. +0100
+    $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/; # +0100 -> +01:00
     $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
     $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
-    LOGINF("Building TODAY window via ?today=1");
-  } elsif ($now_hour < 18) {
-    # Non-interactive default before 18:00: fetch TODAY
-    my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
-    my $end   = $start + 24*3600 - 1; # exclusive end
-    my $off = $now->strftime('%z'); $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/;
-    $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
-    $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
-    LOGINF("Building TODAY window (non-interactive default before 18:00)");
   } else {
-    # At/after 18:00: next day
-    my ($s, $e) = build_scheduled_window();
-    $start_iso = $s;
-    $end_iso   = $e;
-    LOGINF("Building NEXT-DAY window (>=18:00)");
+    LOGINF("Building NEXT-DAY window (tomorrow 00:00..24:00 local)");
+    ($start_iso, $end_iso) = build_scheduled_window();
+    # Safety: if somehow hour < 18 here (due to mis-config), don't fetch next-day
+    if (!$force && $now_hour < 18) {
+      LOGINF("Skipping next-day fetch: not published yet (local hour=%d)", $now_hour);
+      print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_published_yet', hour => $now_hour });
+      return 1;
+    }
   }
 
   # ---- existing link / auth checks ----
@@ -216,21 +244,7 @@ my $ok = eval {
     return 1;
   }
 
-  # Build window and fetch data from EMS
-  my ($start_iso, $end_iso);
-  my $now = localtime;
-  if ($want_today) {
-    LOGINF("Fetching CURRENT day tariffs on demand (today) - interactive/forced request");
-    my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
-    my $end   = $start + 24*3600;
-    my $off = $now->strftime('%z');            # e.g. +0100
-    $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/; # +0100 -> +01:00
-    $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
-    $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
-  } else {
-    ($start_iso, $end_iso) = build_scheduled_window();
-  }
-
+  # Fetch window and normalize
   my $access = ensure_access_token($cfg);
   my ($payload, $source) = fetch_window($cfg, $access, $start_iso, $end_iso);
 
@@ -246,7 +260,6 @@ my $ok = eval {
     return 1;
   }
 
-  # Normalize for file + HTTP response
   my $norm = normalize_prices_doc($payload);
 
   # Write normalized latest file
