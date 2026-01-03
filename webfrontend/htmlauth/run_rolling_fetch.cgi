@@ -124,8 +124,9 @@ sub same_calendar_day {
 my $ok = eval {
   my $cfg = load_cfg();
 
-  my $force    = ($q->param('force') // '') eq '1' ? 1 : 0;
-  my $schedule = $cfg->{fetch_schedule} // '1';
+  my $force      = ($q->param('force') // '') eq '1' ? 1 : 0;
+  my $want_today = ($q->param('today') // '') eq '1' ? 1 : 0;
+  my $schedule   = $cfg->{fetch_schedule} // '1';
 
   my $last_file = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
 
@@ -171,7 +172,7 @@ my $ok = eval {
   my ($start_iso, $end_iso);
   my $now = localtime($now_epoch);
 
-  if ($q->param('today')) {
+  if ($want_today) {
     # Explicit override
     my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
     my $end   = $start + 24*3600 - 1; # exclusive end
