@@ -113,6 +113,15 @@ sub write_json_file {
 }
 # --------------------------------------
 
+# Helper: calendar-day equality (localtime)
+sub same_calendar_day {
+  my ($t1, $t2) = @_;
+  return 0 unless defined $t1 && defined $t2;
+  my @a = localtime($t1);
+  my @b = localtime($t2);
+  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]); # year, month, mday
+}
+
 # Check share of intervals with integrated CHF_kWh > 0
 sub _value_for_unit {
   my ($arr, $unit) = @_;
@@ -139,14 +148,6 @@ sub integrated_nonzero_share {
     $nz++ if ($ikwh // 0) > 0;
   }
   return $nz / $n;
-}
-
-sub same_calendar_day {
-  my ($t1, $t2) = @_;
-  return 0 unless defined $t1 && defined $t2;
-  my @a = localtime($t1);
-  my @b = localtime($t2);
-  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]);
 }
 
 my $ok = eval {
@@ -176,21 +177,24 @@ my $ok = eval {
           my $j = eval { decode_json($raw) } || {};
           my $last_ts = $j->{last_success_epoch};
           if (defined $last_ts && same_calendar_day(time, $last_ts)) {
-            LOGINF("Skipped fetch: already fetched today (once-per-day schedule)");
+            LOGINF("Skipped fetch: already fetched today (once-per-day schedule; last_success_epoch=%d)", $last_ts);
             print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'already_fetched_today' });
             return 1;
           }
+        } else {
+          LOGWARN("Could not open last_fetch file '%s' for reading: %s", $last_file, $!);
         }
       }
     }
 
-    my $hour = (localtime(time))[2];
+    # Ensure current local hour matches configured schedule
+    my $hour = (localtime(time))[2]; # 0..23
     my $allowed = 0;
-    if    ($schedule eq '1')  { $allowed = ($hour >= 18) ? 1 : 0; }   # any time after 18:00
+    if    ($schedule eq '1')  { $allowed = ($hour >= 18) ? 1 : 0; }   # allow any time after 18:00
     elsif ($schedule eq '2')  { $allowed = ($hour == 6 || $hour == 18) ? 1 : 0; }
-    elsif ($schedule eq '12') { $allowed = ($hour % 2 == 0) ? 1 : 0; }
-    elsif ($schedule eq '24') { $allowed = 1; }
-    else                      { $allowed = 0; }
+    elsif ($schedule eq '12') { $allowed = ($hour % 2 == 0) ? 1 : 0; } # even hours
+    elsif ($schedule eq '24') { $allowed = 1; } # any hour
+    else                      { $allowed = 0; } # unknown/disabled
 
     unless ($allowed) {
       LOGINF("Skipped fetch: not scheduled now (hour=$hour schedule=$schedule)");
@@ -201,7 +205,11 @@ my $ok = eval {
     LOGINF("Force fetch requested via ?force=1");
   }
 
-  # Decide TODAY (<18:00) vs NEXT-DAY (>=18:00), with grace period at 18:00
+  # Decide whether this run should fetch "today" (current day) or "next day".
+  # Rules:
+  # - ?today=1 forces fetching today.
+  # - ?force=1 before 18:00 is treated as a manual request and will fetch today.
+  # - Default: before 18:00 -> TODAY; at/after 18:00 -> NEXT-DAY (respect grace).
   my $now_epoch = time();
   my @lt = localtime($now_epoch);
   my $now_hour = $lt[2];   # 0..23
@@ -269,15 +277,15 @@ my $ok = eval {
     return 1;
   }
 
-  # Fetch window (customerTariffs first)
+  # Fetch window and normalize
   my $access = ensure_access_token($cfg);
   my ($payload, $source) = fetch_window($cfg, $access, $start_iso, $end_iso);
 
-  # Fallback to public 'integrated_400D' if integrated CHF_kWh is 0 after 18:00 (next-day)
+  # Next-day fallback to public tariffs if integrated CHF_kWh mostly zero after 18:00
   my $is_nextday = !$want_today;
   if (defined $payload && ref($payload) eq 'HASH' && $is_nextday && $now_hour >= 18) {
-    my $rows = $payload->{rows} // $payload->{prices} // [];
-    my $share = integrated_nonzero_share($rows);
+    my $rows_for_check = $payload->{rows} // $payload->{prices} // [];
+    my $share = integrated_nonzero_share($rows_for_check);
     if ($share < 0.90) {
       my $base = $cfg->{api_base};
       my $tariff_name = $cfg->{fallback_tariff_name} // 'integrated_400D';
@@ -316,6 +324,11 @@ my $ok = eval {
 
   my $norm = normalize_prices_doc($payload);
 
+  # Save metadata (source, from, to) into the file so it's visible later
+  $norm->{source} = $source // 'unknown';
+  $norm->{from}   = $start_iso;
+  $norm->{to}     = $end_iso;
+
   # Write normalized latest file
   my $latest = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
   write_json_file($latest, $norm);
@@ -352,13 +365,13 @@ my $ok = eval {
     1;
   };
 
-  # Return normalized data
+  # Return normalized data (with metadata)
   my $prices = $norm->{prices} // [];
   my $out = {
-    from                  => $start_iso,
-    to                    => $end_iso,
-    source                => $source // 'unknown',
     publication_timestamp => $norm->{publication_timestamp},
+    source                => $norm->{source},
+    from                  => $norm->{from},
+    to                    => $norm->{to},
     prices                => $prices,
     rows                  => $prices,
     interval_count        => scalar(@$prices),
