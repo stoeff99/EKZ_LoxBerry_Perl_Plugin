@@ -113,12 +113,40 @@ sub write_json_file {
 }
 # --------------------------------------
 
+# Check share of intervals with integrated CHF_kWh > 0
+sub _value_for_unit {
+  my ($arr, $unit) = @_;
+  $arr ||= [];
+  for my $e (@$arr) {
+    next unless ref($e) eq 'HASH';
+    my $u = _norm_unit_name($e->{unit});
+    if ($u eq $unit) {
+      my $v = $e->{value};
+      $v = 0 unless defined $v;
+      return $v + 0;
+    }
+  }
+  return 0;
+}
+
+sub integrated_nonzero_share {
+  my ($rows) = @_;
+  return 0 unless $rows && ref($rows) eq 'ARRAY' && @$rows;
+  my $n = scalar(@$rows);
+  my $nz = 0;
+  for my $r (@$rows) {
+    my $ikwh = _value_for_unit($r->{integrated}, 'CHF_kWh');
+    $nz++ if ($ikwh // 0) > 0;
+  }
+  return $nz / $n;
+}
+
 sub same_calendar_day {
   my ($t1, $t2) = @_;
   return 0 unless defined $t1 && defined $t2;
   my @a = localtime($t1);
   my @b = localtime($t2);
-  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]); # year, month, mday
+  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]);
 }
 
 my $ok = eval {
@@ -241,9 +269,38 @@ my $ok = eval {
     return 1;
   }
 
-  # Fetch window and normalize
+  # Fetch window (customerTariffs first)
   my $access = ensure_access_token($cfg);
   my ($payload, $source) = fetch_window($cfg, $access, $start_iso, $end_iso);
+
+  # Fallback to public 'integrated_400D' if integrated CHF_kWh is 0 after 18:00 (next-day)
+  my $is_nextday = !$want_today;
+  if (defined $payload && ref($payload) eq 'HASH' && $is_nextday && $now_hour >= 18) {
+    my $rows = $payload->{rows} // $payload->{prices} // [];
+    my $share = integrated_nonzero_share($rows);
+    if ($share < 0.90) {
+      my $base = $cfg->{api_base};
+      my $tariff_name = $cfg->{fallback_tariff_name} // 'integrated_400D';
+      LOGINF(sprintf("customerTariffs integrated CHF_kWh mostly zero (share=%.2f). Falling back to public tariff_name=%s", $share, $tariff_name));
+      my $pub_payload;
+      my $ok_pub = eval {
+        $pub_payload = get_json_with_retry(
+          "$base/tariffs",
+          { accept => "application/json" },
+          { tariff_name => $tariff_name, start_timestamp => $start_iso, end_timestamp => $end_iso },
+          int($cfg->{retries} || 3)
+        );
+        1;
+      };
+      if ($ok_pub && defined $pub_payload && ref($pub_payload) eq 'HASH') {
+        $payload = $pub_payload;
+        $source  = 'public';
+        LOGINF("Applied public fallback tariffs successfully.");
+      } else {
+        LOGERR("Public fallback tariffs failed; keeping customerTariffs payload. Error: " . ($@ // 'unknown'));
+      }
+    }
+  }
 
   if (!defined $payload || ref($payload) ne 'HASH') {
     if (defined $source && ref($source) eq 'HASH') {
