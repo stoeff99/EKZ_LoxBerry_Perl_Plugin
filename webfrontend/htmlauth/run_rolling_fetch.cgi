@@ -7,7 +7,7 @@ use CGI;
 use JSON::PP;
 use File::Spec;
 use POSIX qw(strftime);
-use Tie::IxHash;           # <-- preserve object key order
+use Tie::IxHash;           # preserve object key order
 use LoxBerry::System;
 use LoxBerry::Log;
 use FindBin;
@@ -93,7 +93,6 @@ sub normalize_prices_doc {
     $pub = strftime('%Y-%m-%dT%H:%M:%S', localtime) . _tz_offset_colon();
   }
 
-  # Top-level document with ordered keys too
   tie my %doc, 'Tie::IxHash';
   %doc = (
     publication_timestamp => $pub,
@@ -105,7 +104,7 @@ sub normalize_prices_doc {
 
 sub write_json_file {
   my ($path, $doc) = @_;
-  my $json = JSON::PP->new->pretty(1)->encode($doc);   # no canonical => preserve Tie::IxHash order
+  my $json = JSON::PP->new->pretty(1)->encode($doc);
   open my $fh, '>', $path or die "Cannot write $path: $!";
   print $fh $json;
   close $fh;
@@ -113,16 +112,7 @@ sub write_json_file {
 }
 # --------------------------------------
 
-# Helper: calendar-day equality (localtime)
-sub same_calendar_day {
-  my ($t1, $t2) = @_;
-  return 0 unless defined $t1 && defined $t2;
-  my @a = localtime($t1);
-  my @b = localtime($t2);
-  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]); # year, month, mday
-}
-
-# Check share of intervals with integrated CHF_kWh > 0
+# Helpers to inspect and adjust values
 sub _value_for_unit {
   my ($arr, $unit) = @_;
   $arr ||= [];
@@ -138,6 +128,26 @@ sub _value_for_unit {
   return 0;
 }
 
+sub _set_value_for_unit {
+  my ($arr, $unit, $new_value) = @_;
+  $arr ||= [];
+  my $found = 0;
+  for my $e (@$arr) {
+    next unless ref($e) eq 'HASH';
+    my $u = _norm_unit_name($e->{unit});
+    if ($u eq $unit) {
+      $e->{value} = ($new_value + 0);
+      $found = 1;
+      last;
+    }
+  }
+  if (!$found) {
+    push @$arr, { unit => $unit, value => ($new_value + 0) };
+  }
+  return $arr;
+}
+
+# Share of intervals with integrated CHF_kWh > 0
 sub integrated_nonzero_share {
   my ($rows) = @_;
   return 0 unless $rows && ref($rows) eq 'ARRAY' && @$rows;
@@ -150,10 +160,54 @@ sub integrated_nonzero_share {
   return $nz / $n;
 }
 
+# Apply fixed regional fee to integrated CHF_kWh for all rows (public fallback only)
+# Optionally zero out regional_fees CHF_kWh to avoid double counting in downstream computation.
+sub apply_fixed_regional_fee_to_integrated {
+  my ($payload, $fee_kwh, $also_zero_regional) = @_;
+  my $rows = $payload->{rows} // $payload->{prices} // [];
+  for my $r (@$rows) {
+    # Add fee to integrated CHF_kWh
+    my $ikwh = _value_for_unit($r->{integrated}, 'CHF_kWh');
+    $ikwh += ($fee_kwh + 0);
+    $r->{integrated} = _set_value_for_unit($r->{integrated}, 'CHF_kWh', $ikwh);
+
+    # Ensure integrated CHF_M key exists (keep as-is or 0)
+    my $im = _value_for_unit($r->{integrated}, 'CHF_M');
+    $r->{integrated} = _set_value_for_unit($r->{integrated}, 'CHF_M', $im);
+
+    # Optionally zero-out regional_fees CHF_kWh to avoid double counting
+    if ($also_zero_regional) {
+      my $rm = _value_for_unit($r->{regional_fees}, 'CHF_M');
+      $r->{regional_fees} = _set_value_for_unit($r->{regional_fees}, 'CHF_M', $rm); # keep CHF_M as-is
+      $r->{regional_fees} = _set_value_for_unit($r->{regional_fees}, 'CHF_kWh', 0.0);
+    } else {
+      # Ensure regional CHF_kWh exists (even if fee is fixed, leave as-is)
+      my $rkwh = _value_for_unit($r->{regional_fees}, 'CHF_kWh'); # no change
+      $r->{regional_fees} = _set_value_for_unit($r->{regional_fees}, 'CHF_kWh', $rkwh);
+    }
+  }
+  # Reflect adjusted rows into both keys if only one exists
+  if (exists $payload->{rows} && ref($payload->{rows}) eq 'ARRAY') {
+    $payload->{prices} = $payload->{rows};
+  } elsif (exists $payload->{prices} && ref($payload->{prices}) eq 'ARRAY') {
+    $payload->{rows} = $payload->{prices};
+  }
+  return $payload;
+}
+
+# Calendar-day equality (localtime)
+sub same_calendar_day {
+  my ($t1, $t2) = @_;
+  return 0 unless defined $t1 && defined $t2;
+  my @a = localtime($t1);
+  my @b = localtime($t2);
+  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]);
+}
+
 my $ok = eval {
   my $cfg = load_cfg();
 
-  # Ensure we use EKZ timezone (e.g., Europe/Zurich) for schedule checks
+  # Ensure schedule checks use configured timezone (e.g., Europe/Zurich)
   if ($cfg->{timezone}) {
     local $ENV{TZ} = $cfg->{timezone};
   }
@@ -177,24 +231,21 @@ my $ok = eval {
           my $j = eval { decode_json($raw) } || {};
           my $last_ts = $j->{last_success_epoch};
           if (defined $last_ts && same_calendar_day(time, $last_ts)) {
-            LOGINF("Skipped fetch: already fetched today (once-per-day schedule; last_success_epoch=%d)", $last_ts);
+            LOGINF("Skipped fetch: already fetched today (once-per-day schedule)");
             print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'already_fetched_today' });
             return 1;
           }
-        } else {
-          LOGWARN("Could not open last_fetch file '%s' for reading: %s", $last_file, $!);
         }
       }
     }
 
-    # Ensure current local hour matches configured schedule
-    my $hour = (localtime(time))[2]; # 0..23
+    my $hour = (localtime(time))[2];
     my $allowed = 0;
-    if    ($schedule eq '1')  { $allowed = ($hour >= 18) ? 1 : 0; }   # allow any time after 18:00
+    if    ($schedule eq '1')  { $allowed = ($hour >= 18) ? 1 : 0; }   # any time after 18:00
     elsif ($schedule eq '2')  { $allowed = ($hour == 6 || $hour == 18) ? 1 : 0; }
-    elsif ($schedule eq '12') { $allowed = ($hour % 2 == 0) ? 1 : 0; } # even hours
-    elsif ($schedule eq '24') { $allowed = 1; } # any hour
-    else                      { $allowed = 0; } # unknown/disabled
+    elsif ($schedule eq '12') { $allowed = ($hour % 2 == 0) ? 1 : 0; }
+    elsif ($schedule eq '24') { $allowed = 1; }
+    else                      { $allowed = 0; }
 
     unless ($allowed) {
       LOGINF("Skipped fetch: not scheduled now (hour=$hour schedule=$schedule)");
@@ -205,11 +256,7 @@ my $ok = eval {
     LOGINF("Force fetch requested via ?force=1");
   }
 
-  # Decide whether this run should fetch "today" (current day) or "next day".
-  # Rules:
-  # - ?today=1 forces fetching today.
-  # - ?force=1 before 18:00 is treated as a manual request and will fetch today.
-  # - Default: before 18:00 -> TODAY; at/after 18:00 -> NEXT-DAY (respect grace).
+  # Decide TODAY (<18:00) vs NEXT-DAY (>=18:00), with grace period at 18:00
   my $now_epoch = time();
   my @lt = localtime($now_epoch);
   my $now_hour = $lt[2];   # 0..23
@@ -235,7 +282,6 @@ my $ok = eval {
     $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
     $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
   } else {
-    # Grace period: skip next-day fetch from 18:00 up to (18:00 + grace)
     if ($now_hour == 18 && $now_min < $grace) {
       LOGINF("Skipping next-day fetch: within grace period (minute=%d grace=%d)", $now_min, $grace);
       print JSON::PP->new->encode({
@@ -249,7 +295,6 @@ my $ok = eval {
     LOGINF("Building NEXT-DAY window (tomorrow 00:00..24:00 local)");
     ($start_iso, $end_iso) = build_scheduled_window();
 
-    # Safety: if somehow hour < 18 here (due to mis-config), don't fetch next-day
     if (!$force && $now_hour < 18) {
       LOGINF("Skipping next-day fetch: not published yet (local hour=%d)", $now_hour);
       print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_published_yet', hour => $now_hour });
@@ -277,7 +322,7 @@ my $ok = eval {
     return 1;
   }
 
-  # Fetch window and normalize
+  # Fetch window and potentially apply fallback
   my $access = ensure_access_token($cfg);
   my ($payload, $source) = fetch_window($cfg, $access, $start_iso, $end_iso);
 
@@ -301,9 +346,15 @@ my $ok = eval {
         1;
       };
       if ($ok_pub && defined $pub_payload && ref($pub_payload) eq 'HASH') {
+        # Apply fixed regional fee to integrated for fallback result (to include the regional fee in integrated)
+        my $fee_kwh = ($cfg->{fallback_regional_fee_kwh} // 0.0016) + 0;
+        my $zero_reg = !!($cfg->{fallback_zero_regional_when_applied} // JSON::PP::true);
+        $pub_payload = apply_fixed_regional_fee_to_integrated($pub_payload, $fee_kwh, $zero_reg);
+
         $payload = $pub_payload;
         $source  = 'public';
-        LOGINF("Applied public fallback tariffs successfully.");
+        LOGINF("Applied public fallback tariffs and folded regional fee (%.4f CHF/kWh) into integrated%s.",
+          $fee_kwh, ($zero_reg ? " (regional CHF_kWh zeroed)" : ""));
       } else {
         LOGERR("Public fallback tariffs failed; keeping customerTariffs payload. Error: " . ($@ // 'unknown'));
       }
@@ -333,7 +384,7 @@ my $ok = eval {
   my $latest = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
   write_json_file($latest, $norm);
 
-  # Record last successful fetch (epoch) so next runs on same calendar day can be skipped
+  # Record last successful fetch
   eval {
     my $last = { last_success_epoch => time() };
     my $lfh = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
@@ -345,7 +396,7 @@ my $ok = eval {
     1;
   };
 
-  # Optional: calendar-day file based on first interval
+  # Per-day file
   if (@{ $norm->{prices} // [] }) {
     my $day = substr($norm->{prices}[0]{start_timestamp} // '', 0, 10);
     if ($day && $day =~ /^\d{4}-\d{2}-\d{2}$/) {
@@ -354,10 +405,10 @@ my $ok = eval {
     }
   }
 
-  # Publish using raw payload
+  # Publish raw payload
   eval { publish_tariffs_to_mqtt($cfg, $payload, $source, $start_iso, $end_iso); 1 };
 
-  # Trigger computed publishes (intervals + hourly)
+  # Trigger compute publishes
   eval {
     my $compute = File::Spec->catfile($FindBin::Bin, 'compute_costs.cgi');
     my $out = qx{/usr/bin/perl $compute};
@@ -365,7 +416,7 @@ my $ok = eval {
     1;
   };
 
-  # Return normalized data (with metadata)
+  # Response
   my $prices = $norm->{prices} // [];
   my $out = {
     publication_timestamp => $norm->{publication_timestamp},
