@@ -93,17 +93,19 @@ sub normalize_prices_doc {
     $pub = strftime('%Y-%m-%dT%H:%M:%S', localtime) . _tz_offset_colon();
   }
 
+  # Top-level document with ordered keys too
   tie my %doc, 'Tie::IxHash';
   %doc = (
     publication_timestamp => $pub,
-    prices                => \@out,
+    prices                => \@out,   # keep original key
+    rows                  => \@out,   # add rows for compute_costs.cgi compatibility
   );
   return \%doc;
 }
 
 sub write_json_file {
   my ($path, $doc) = @_;
-  my $json = JSON::PP->new->pretty(1)->encode($doc);
+  my $json = JSON::PP->new->pretty(1)->encode($doc);   # no canonical => preserve Tie::IxHash order
   open my $fh, '>', $path or die "Cannot write $path: $!";
   print $fh $json;
   close $fh;
@@ -116,7 +118,7 @@ sub same_calendar_day {
   return 0 unless defined $t1 && defined $t2;
   my @a = localtime($t1);
   my @b = localtime($t2);
-  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]);
+  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]); # year, month, mday
 }
 
 my $ok = eval {
