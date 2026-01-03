@@ -7,7 +7,7 @@ use CGI;
 use JSON::PP;
 use File::Spec;
 use POSIX qw(strftime);
-use Tie::IxHash;
+use Tie::IxHash;           # <-- preserve object key order
 use LoxBerry::System;
 use LoxBerry::Log;
 use FindBin;
@@ -30,163 +30,294 @@ my $log = LoxBerry::Log->new(
 
 LOGSTART("run_rolling_fetch started");
 
+# -------- Normalization helpers --------
+sub _norm_unit_name {
+  my ($u) = @_;
+  return 'CHF_kWh' if defined $u && lc($u) eq 'chf_kwh';
+  return 'CHF_M'   if defined $u && lc($u) eq 'chf_m';
+  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]?kwh$/;
+  return 'CHF_M'   if defined $u && lc($u) =~ /^chf[_-]?m$/;
+  return $u // 'CHF_kWh';
+}
+
+sub _ordered_cost_array {
+  my ($arr) = @_;
+  $arr ||= [];
+  my %v;
+  for my $e (@$arr) {
+    next unless ref $e eq 'HASH';
+    my $unit = _norm_unit_name($e->{unit});
+    $v{$unit} = $e->{value} + 0 if exists $e->{value};
+  }
+  return [
+    { unit => 'CHF_M',   value => ($v{'CHF_M'}   // 0) + 0 },
+    { unit => 'CHF_kWh', value => ($v{'CHF_kWh'} // 0) + 0 },
+  ];
+}
+
+# Return a TIED ordered hashref with keys in the exact order we want
+sub _ordered_block {
+  my ($p) = @_;
+  tie my %o, 'Tie::IxHash';
+  %o = (
+    start_timestamp => $p->{start_timestamp},
+    end_timestamp   => $p->{end_timestamp},
+    electricity     => _ordered_cost_array($p->{electricity}),
+    grid            => _ordered_cost_array($p->{grid}),
+    integrated      => _ordered_cost_array($p->{integrated}),
+    regional_fees   => _ordered_cost_array($p->{regional_fees}),
+  );
+  return \%o;
+}
+
 sub _tz_offset_colon {
   my $z = strftime('%z', localtime);   # e.g. +0100 or -0530
   $z =~ s/(\+|-)(\d{2})(\d{2})/$1$2:$3/;
   return $z;
 }
 
+sub normalize_prices_doc {
+  my ($payload) = @_;
+
+  my $rows = $payload->{prices};
+  $rows = $payload->{rows} if !defined $rows;
+  $rows ||= [];
+
+  my @sorted = sort {
+    ($a->{start_timestamp} // '') cmp ($b->{start_timestamp} // '')
+  } grep { ref $_ eq 'HASH' && $_->{start_timestamp} } @$rows;
+
+  my @out = map { _ordered_block($_) } @sorted;
+
+  my $pub = $payload->{publication_timestamp};
+  if (!defined $pub || $pub eq '') {
+    $pub = strftime('%Y-%m-%dT%H:%M:%S', localtime) . _tz_offset_colon();
+  }
+
+  # Top-level document with ordered keys too
+  tie my %doc, 'Tie::IxHash';
+  %doc = (
+    publication_timestamp => $pub,
+    prices                => \@out,
+  );
+  return \%doc;
+}
+
+sub write_json_file {
+  my ($path, $doc) = @_;
+  my $json = JSON::PP->new->pretty(1)->encode($doc);   # no canonical => preserve Tie::IxHash order
+  open my $fh, '>', $path or die "Cannot write $path: $!";
+  print $fh $json;
+  close $fh;
+  chmod 0640, $path;
+}
+# --------------------------------------
+
+# Helper: calendar-day equality (localtime)
+sub same_calendar_day {
+  my ($t1, $t2) = @_;
+  return 0 unless defined $t1 && defined $t2;
+  my @a = localtime($t1);
+  my @b = localtime($t2);
+  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]); # year, month, mday
+}
+
 my $ok = eval {
   my $cfg = load_cfg();
-  my $force    = ($q->param('force') // '') eq '1' ? 1 : 0;
-  my $wantToday= ($q->param('today') // '') eq '1' ? 1 : 0;
+
+  # allow force via query param: run_rolling_fetch.cgi?force=1 will bypass schedule checks
+  my $force = ($q->param('force') // '') eq '1' ? 1 : 0;
+
+  # Enforce schedule guard BEFORE performing any fetching to avoid accidental downloads.
+  # Read configured schedule (values: '1','2','12','24') - default to '1' (18:00) if unset.
   my $schedule = $cfg->{fetch_schedule} // '1';
 
-  my $now_epoch = time();
-  my $now_hour  = (localtime($now_epoch))[2];
+  # Path to record last successful fetch
+  my $last_file = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
 
-  # Schedule guard
   if (!$force) {
+    # Only apply the "already fetched today" guard for strictly once-per-day schedules.
+    # For other schedules (2, 12, 24) we rely on the hour-of-day check below.
+    if (($schedule // '') eq '1') {
+      if (-f $last_file) {
+        if (open my $lf, '<', $last_file) {
+          local $/ = undef;
+          my $raw = <$lf>;
+          close $lf;
+          my $j = eval { decode_json($raw) } || {};
+          my $last_ts = $j->{last_success_epoch};
+          if (defined $last_ts && same_calendar_day(time, $last_ts)) {
+            LOGINF("Skipped fetch: already fetched today (once-per-day schedule; last_success_epoch=%d)", $last_ts);
+            print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'already_fetched_today' });
+            return 1;
+          }
+        } else {
+          LOGWARN("Could not open last_fetch file '%s' for reading: %s", $last_file, $!);
+        }
+      }
+    }
+
+    # Ensure current local hour matches configured schedule
+    my $hour = (localtime(time))[2]; # 0..23
     my $allowed = 0;
-    if    ($schedule eq '1')  { $allowed = ($now_hour >= 18) ? 1 : 0; }
-    elsif ($schedule eq '2')  { $allowed = ($now_hour == 6 || $now_hour >= 18) ? 1 : 0; }
-    elsif ($schedule eq '12') { $allowed = ($now_hour % 2 == 0) ? 1 : 0; }
-    elsif ($schedule eq '24') { $allowed = 1; }
-    else                      { $allowed = 0; }
+    if ($schedule eq '1') {
+      $allowed = ($hour == 18) ? 1 : 0;
+    } elsif ($schedule eq '2') {
+      $allowed = ($hour == 6 || $hour == 18) ? 1 : 0;
+    } elsif ($schedule eq '12') {
+      $allowed = ($hour % 2 == 0) ? 1 : 0; # even hours
+    } elsif ($schedule eq '24') {
+      $allowed = 1; # any hour
+    } else {
+      $allowed = 0; # unknown/disabled
+    }
 
     unless ($allowed) {
-      LOGINF("Skipped fetch: not scheduled now (hour=$now_hour schedule=$schedule)");
-      print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_scheduled_now', hour => $now_hour, schedule => $schedule });
+      LOGINF("Skipped fetch: not scheduled now (hour=$hour schedule=$schedule)");
+      print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_scheduled_now', hour => $hour, schedule => $schedule });
       return 1;
     }
   } else {
     LOGINF("Force fetch requested via ?force=1");
   }
 
-  # Decide window: today vs next-day
-  my ($start_iso, $end_iso);
-  my $now = localtime($now_epoch);
-  if ($wantToday || ($force && $now_hour < 18) || (!$force && $now_hour < 18)) {
-    LOGINF("Building TODAY window (00:00..24:00 local)");
-    my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
-    my $end   = $start + 24*3600;
-    my $off = $now->strftime('%z'); $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/;
-    $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
-    $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
-  } else {
-    LOGINF("Building NEXT-DAY window (tomorrow 00:00..24:00 local)");
-    ($start_iso, $end_iso) = build_scheduled_window();
-    if (!$force && $now_hour < 18) {
-      LOGINF("Skipping next-day fetch: not published yet (hour=%d)", $now_hour);
+ 
+  # Decide whether this run should fetch "today" (current day) or "next day".
+  # Rules:
+  # - ?today=1 forces fetching today.
+  # - ?force=1 before 18:00 is treated as a manual request and will fetch today.
+  # - Interactive web requests (coming from a browser, i.e. REMOTE_ADDR is set) with no params
+  #   before 18:00 will fetch today (convenience for manual Fetch Now).
+  # - Cron/automated runs (no REMOTE_ADDR) without params will NOT fetch next-day before 18:00.
+  my $now_hour = (localtime(time))[2]; # 0..23
+  # Consider request interactive if REMOTE_ADDR (IP) or HTTP_USER_AGENT exists.
+  # Some server setups do not populate REMOTE_ADDR for proxied/internal requests,
+  # but browsers always send a User-Agent header which appears as HTTP_USER_AGENT.
+  my $is_interactive =
+       (defined $ENV{REMOTE_ADDR} && $ENV{REMOTE_ADDR} ne '')
+    || (defined $ENV{HTTP_USER_AGENT} && $ENV{HTTP_USER_AGENT} ne '');
+  my $want_today = 0;
+  if ($q->param('today')) {
+    $want_today = 1;
+  } elsif ($force && $now_hour < 18) {
+    # forced manual run before 18:00 -> treat as today's fetch
+    $want_today = 1;
+  } elsif (!$force && $is_interactive && $now_hour < 18) {
+    # interactive browser request before 18:00 with no params -> fetch today
+    $want_today = 1;
+  }
+
+  if (!$want_today) {
+    # Not fetching today: enforce "do not fetch next-day before 18:00"
+    if ($now_hour < 18) {
+      LOGINF("Skipping fetch for next-day: not published yet (local hour=%d)", $now_hour);
       print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_published_yet', hour => $now_hour });
       return 1;
     }
   }
 
-  # Link/auth checks
-  my ($link_status, $link_url, $link_err) = try_ensure_linked($cfg);
+  # ---- existing link / auth checks ----
+  my ($link_status, $link_url) = try_ensure_linked($cfg);
   if ($link_status eq 'not_signed_in') {
-    print encode_json({ error => 'not_signed_in', message => 'Sign in via plugin UI.' }); return 1;
+    print encode_json({ error => 'not_signed_in', message => 'User not signed in. Please sign in via the plugin UI.' });
+    return 1;
   }
   if ($link_status eq 'link_required') {
-    print encode_json({ error => 'link_required', linking_process_redirect_uri => $link_url }); return 1;
+    print encode_json({
+      error => 'link_required',
+      message => 'EMS is not linked to customer account. Redirect customer to linking flow.',
+      linking_process_redirect_uri => $link_url,
+    });
+    return 1;
   }
   if ($link_status eq 'error') {
-    print encode_json({ error => 'link_check_failed', message => ($link_err // 'Unknown error') }); return 1;
+    my (undef, undef, $err) = try_ensure_linked($cfg);
+    print encode_json({ error => 'link_check_failed', message => $err // 'Unknown error checking link status' });
+    return 1;
   }
 
-  # Fetch
+  # Build window and fetch data from EMS
+  my ($start_iso, $end_iso);
+  my $now = localtime;
+  if ($want_today) {
+    LOGINF("Fetching CURRENT day tariffs on demand (today) - interactive/forced request");
+    my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
+    my $end   = $start + 24*3600;
+    my $off = $now->strftime('%z');            # e.g. +0100
+    $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/; # +0100 -> +01:00
+    $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+    $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+  } else {
+    ($start_iso, $end_iso) = build_scheduled_window();
+  }
+
   my $access = ensure_access_token($cfg);
   my ($payload, $source) = fetch_window($cfg, $access, $start_iso, $end_iso);
 
-  unless (defined $payload && ref($payload) eq 'HASH') {
-    print encode_json({ error => 'invalid_fetch_response', message => 'Unexpected response from fetch_window' });
-    return 1;
-  }
-
-  # Guard: only write complete payloads; for next-day after 18:00 use fallback if needed
-  my $is_complete = payload_is_complete($payload, $start_iso, $end_iso);
-  if (!$is_complete && $now_hour >= 18 && !$wantToday) {
-    my $fallback = $cfg->{fallback_tariff_name} // '';
-    if ($fallback ne '') {
-      LOGINF("Next-day payload incomplete after 18:00. Attempting fallback tariff_name=%s", $fallback);
-      my $fb = fetch_public_tariffs_by_name($cfg, $start_iso, $end_iso, $fallback);
-      if (defined $fb && payload_is_complete($fb, $start_iso, $end_iso)) {
-        $payload = $fb; $source = 'public';
-        LOGINF("Fallback tariff applied.");
-      } else {
-        print encode_json({ error => 'incomplete_nextday', message => 'Next-day incomplete; fallback also incomplete. Keeping previous file.' });
-        return 1;
-      }
-    } else {
-      print encode_json({ error => 'incomplete_nextday', message => 'Next-day incomplete and no fallback configured. Keeping previous file.' });
-      return 1;
+  if (!defined $payload || ref($payload) ne 'HASH') {
+    if (defined $source && ref($source) eq 'HASH') {
+      ($payload, $source) = ($source, $payload);
     }
-  } elsif (!$is_complete) {
-    print encode_json({ error => 'incomplete_payload', message => 'Incomplete data for requested window. Keeping previous file.' });
+  }
+  unless (defined $payload && ref($payload) eq 'HASH') {
+    my $msg = "Unexpected response from fetch_window";
+    LOGERR($msg);
+    print encode_json({ error => 'invalid_fetch_response', message => $msg });
     return 1;
   }
 
-  # Also dump raw payload for diagnostics
-  eval {
-    my $raw_path = File::Spec->catfile($lbpdatadir, 'tariffs_raw_latest.json');
-    my $tmp = "$raw_path.tmp.$$";
-    open my $rfh, '>', $tmp or die "Cannot write $tmp: $!";
-    print $rfh encode_json($payload); close $rfh; chmod 0640, $tmp;
-    rename $tmp, $raw_path or die "Cannot rename $tmp to $raw_path: $!";
-    1;
-  };
+  # Normalize for file + HTTP response
+  my $norm = normalize_prices_doc($payload);
 
-  # Normalize and write
-  my $rows = $payload->{rows} // $payload->{prices} // [];
-  tie my %doc, 'Tie::IxHash';
-  %doc = (
-    publication_timestamp => strftime('%Y-%m-%dT%H:%M:%S', localtime) . _tz_offset_colon(),
-    prices                => $rows,
-  );
+  # Write normalized latest file
   my $latest = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
-  my $tmpf   = "$latest.tmp.$$";
-  open my $fh, '>', $tmpf or die "Cannot write $tmpf: $!";
-  print $fh JSON::PP->new->pretty(1)->encode(\%doc);
-  close $fh; chmod 0640, $tmpf; rename $tmpf, $latest;
+  write_json_file($latest, $norm);
 
-  # Record last successful fetch
+  # Record last successful fetch (epoch) so next runs on same calendar day can be skipped
   eval {
+    my $last = { last_success_epoch => time() };
     my $lfh = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
-    open my $f, '>', $lfh; print $f JSON::PP->new->canonical(1)->encode({ last_success_epoch => time() }); close $f; chmod 0640, $lfh;
+    if (open my $fh, '>', $lfh) {
+      print $fh JSON::PP->new->canonical(1)->encode($last);
+      close $fh;
+      chmod 0640, $lfh;
+    }
     1;
   };
 
-  # Per-day file
-  if (@$rows) {
-    my $day = substr($rows->[0]{start_timestamp} // '', 0, 10);
+  # Optional: calendar-day file based on first interval
+  if (@{ $norm->{prices} // [] }) {
+    my $day = substr($norm->{prices}[0]{start_timestamp} // '', 0, 10);
     if ($day && $day =~ /^\d{4}-\d{2}-\d{2}$/) {
       my $byday = File::Spec->catfile($lbpdatadir, "tariffs_${day}.json");
-      open my $bf, '>', "$byday.tmp.$$"; print $bf JSON::PP->new->pretty(1)->encode(\%doc); close $bf;
-      chmod 0640, "$byday.tmp.$$"; rename "$byday.tmp.$$", $byday;
+      write_json_file($byday, $norm);
     }
   }
 
-  # Publish raw payload to MQTT
+  # Publish using raw payload (leave as-is). If you need normalized, call publish with $norm.
   eval { publish_tariffs_to_mqtt($cfg, $payload, $source, $start_iso, $end_iso); 1 };
 
-  # Trigger compute publish
+  # Trigger computed publishes (intervals + hourly) via compute_costs.cgi (without nopublish)
   eval {
     my $compute = File::Spec->catfile($FindBin::Bin, 'compute_costs.cgi');
+    # run compute_costs CGI directly to publish computed topics (no 'nopublish')
     my $out = qx{/usr/bin/perl $compute};
     LOGINF("compute_costs.cgi invoked to publish intervals/hourly.");
     1;
   };
 
-  # Response
-  print JSON::PP->new->pretty(1)->encode({
-    from           => $start_iso,
-    to             => $end_iso,
-    source         => $source // 'unknown',
-    interval_count => scalar(@$rows),
-    prices         => $rows,
-    rows           => $rows,
-  });
+  # Return normalized data (rows alias kept)
+  my $prices = $norm->{prices} // [];
+  my $out = {
+    from                  => $start_iso,
+    to                    => $end_iso,
+    source                => $source // 'unknown',
+    publication_timestamp => $norm->{publication_timestamp},
+    prices                => $prices,
+    rows                  => $prices,
+    interval_count        => scalar(@$prices),
+  };
+  print JSON::PP->new->pretty(1)->encode($out);  # preserve Tie::IxHash order
   return 1;
 };
 
