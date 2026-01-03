@@ -608,7 +608,7 @@ sub build_scheduled_window {
   my $now = localtime;
   my $tomorrow = $now + 24*3600;
   my $start = Time::Piece->strptime($tomorrow->strftime('%Y-%m-%d').' 00:00:00', '%Y-%m-%d %H:%M:%S');
-  my $end = $start + 24*3600;
+  my $end = $start + 24*3600 - 1;
 
   # Keep local timezone offset in the ISO strings (e.g. +01:00)
   my $off = $now->strftime('%z');            # e.g. +0100
