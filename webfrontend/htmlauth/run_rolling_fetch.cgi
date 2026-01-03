@@ -55,7 +55,6 @@ sub _ordered_cost_array {
   ];
 }
 
-# Return a TIED ordered hashref with keys in the exact order we want
 sub _ordered_block {
   my ($p) = @_;
   tie my %o, 'Tie::IxHash';
@@ -94,7 +93,6 @@ sub normalize_prices_doc {
     $pub = strftime('%Y-%m-%dT%H:%M:%S', localtime) . _tz_offset_colon();
   }
 
-  # Top-level document with ordered keys too
   tie my %doc, 'Tie::IxHash';
   %doc = (
     publication_timestamp => $pub,
@@ -105,7 +103,7 @@ sub normalize_prices_doc {
 
 sub write_json_file {
   my ($path, $doc) = @_;
-  my $json = JSON::PP->new->pretty(1)->encode($doc);   # no canonical => preserve Tie::IxHash order
+  my $json = JSON::PP->new->pretty(1)->encode($doc);
   open my $fh, '>', $path or die "Cannot write $path: $!";
   print $fh $json;
   close $fh;
@@ -113,36 +111,32 @@ sub write_json_file {
 }
 # --------------------------------------
 
-# Helper: calendar-day equality (localtime)
 sub same_calendar_day {
   my ($t1, $t2) = @_;
   return 0 unless defined $t1 && defined $t2;
   my @a = localtime($t1);
   my @b = localtime($t2);
-  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]); # year, month, mday
+  return ($a[5] == $b[5] && $a[4] == $b[4] && $a[3] == $b[3]);
 }
 
 my $ok = eval {
   my $cfg = load_cfg();
 
-  # Ensure all localtime operations use the configured timezone (e.g., Europe/Zurich)
+  # Ensure we use EKZ timezone (e.g., Europe/Zurich) for schedule checks
   if ($cfg->{timezone}) {
     local $ENV{TZ} = $cfg->{timezone};
   }
 
-  # allow force via query param: run_rolling_fetch.cgi?force=1 will bypass schedule checks
   my $force      = ($q->param('force') // '') eq '1' ? 1 : 0;
   my $want_today = ($q->param('today') // '') eq '1' ? 1 : 0;
+  my $schedule   = $cfg->{fetch_schedule} // '1';
 
-  # Enforce schedule guard BEFORE performing any fetching to avoid accidental downloads.
-  # Read configured schedule (values: '1','2','12','24') - default to '1' (18:00) if unset.
-  my $schedule = $cfg->{fetch_schedule} // '1';
+  # Configurable grace minutes (default: 5)
+  my $grace = int($cfg->{publish_grace_minutes} // 5);
 
-  # Path to record last successful fetch
   my $last_file = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
 
   if (!$force) {
-    # Only apply the "already fetched today" guard for strictly once-per-day schedules.
     if (($schedule // '') eq '1') {
       if (-f $last_file) {
         if (open my $lf, '<', $last_file) {
@@ -152,30 +146,21 @@ my $ok = eval {
           my $j = eval { decode_json($raw) } || {};
           my $last_ts = $j->{last_success_epoch};
           if (defined $last_ts && same_calendar_day(time, $last_ts)) {
-            LOGINF("Skipped fetch: already fetched today (once-per-day schedule; last_success_epoch=%d)", $last_ts);
+            LOGINF("Skipped fetch: already fetched today (once-per-day schedule)");
             print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'already_fetched_today' });
             return 1;
           }
-        } else {
-          LOGWARN("Could not open last_fetch file '%s' for reading: %s", $last_file, $!);
         }
       }
     }
 
-    # Ensure current local hour matches configured schedule
-    my $hour = (localtime(time))[2]; # 0..23
+    my $hour = (localtime(time))[2];
     my $allowed = 0;
-    if ($schedule eq '1') {
-      $allowed = ($hour >= 18) ? 1 : 0;   # allow any time after 18:00
-    } elsif ($schedule eq '2') {
-      $allowed = ($hour == 6 || $hour == 18) ? 1 : 0;
-    } elsif ($schedule eq '12') {
-      $allowed = ($hour % 2 == 0) ? 1 : 0; # even hours
-    } elsif ($schedule eq '24') {
-      $allowed = 1; # any hour
-    } else {
-      $allowed = 0; # unknown/disabled
-    }
+    if    ($schedule eq '1')  { $allowed = ($hour >= 18) ? 1 : 0; }   # any time after 18:00
+    elsif ($schedule eq '2')  { $allowed = ($hour == 6 || $hour == 18) ? 1 : 0; }
+    elsif ($schedule eq '12') { $allowed = ($hour % 2 == 0) ? 1 : 0; }
+    elsif ($schedule eq '24') { $allowed = 1; }
+    else                      { $allowed = 0; }
 
     unless ($allowed) {
       LOGINF("Skipped fetch: not scheduled now (hour=$hour schedule=$schedule)");
@@ -186,13 +171,11 @@ my $ok = eval {
     LOGINF("Force fetch requested via ?force=1");
   }
 
-  # Decide whether this run should fetch "today" (current day) or "next day".
-  # Rules:
-  # - ?today=1 forces fetching today.
-  # - ?force=1 before 18:00 is treated as a manual request and will fetch today.
-  # - before 18:00 default to today; at/after 18:00 default to next-day.
+  # Decide TODAY (<18:00) vs NEXT-DAY (>=18:00), with grace period at 18:00
   my $now_epoch = time();
-  my $now_hour  = (localtime($now_epoch))[2]; # in configured timezone
+  my @lt = localtime($now_epoch);
+  my $now_hour = $lt[2];   # 0..23
+  my $now_min  = $lt[1];   # 0..59
 
   if (!$want_today) {
     if ($force && $now_hour < 18) {
@@ -214,8 +197,20 @@ my $ok = eval {
     $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
     $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
   } else {
+    # Grace period: skip next-day fetch from 18:00 up to (18:00 + grace)
+    if ($now_hour == 18 && $now_min < $grace) {
+      LOGINF("Skipping next-day fetch: within grace period (minute=%d grace=%d)", $now_min, $grace);
+      print JSON::PP->new->encode({
+        skipped        => JSON::PP::true,
+        reason         => 'within_grace_period',
+        minute         => $now_min,
+        grace_minutes  => $grace
+      });
+      return 1;
+    }
     LOGINF("Building NEXT-DAY window (tomorrow 00:00..24:00 local)");
     ($start_iso, $end_iso) = build_scheduled_window();
+
     # Safety: if somehow hour < 18 here (due to mis-config), don't fetch next-day
     if (!$force && $now_hour < 18) {
       LOGINF("Skipping next-day fetch: not published yet (local hour=%d)", $now_hour);
@@ -224,7 +219,7 @@ my $ok = eval {
     }
   }
 
-  # ---- existing link / auth checks ----
+  # ---- link / auth checks ----
   my ($link_status, $link_url) = try_ensure_linked($cfg);
   if ($link_status eq 'not_signed_in') {
     print encode_json({ error => 'not_signed_in', message => 'User not signed in. Please sign in via the plugin UI.' });
@@ -287,19 +282,18 @@ my $ok = eval {
     }
   }
 
-  # Publish using raw payload (leave as-is). If you need normalized, call publish with $norm.
+  # Publish using raw payload
   eval { publish_tariffs_to_mqtt($cfg, $payload, $source, $start_iso, $end_iso); 1 };
 
-  # Trigger computed publishes (intervals + hourly) via compute_costs.cgi (without nopublish)
+  # Trigger computed publishes (intervals + hourly)
   eval {
     my $compute = File::Spec->catfile($FindBin::Bin, 'compute_costs.cgi');
-    # run compute_costs CGI directly to publish computed topics (no 'nopublish')
     my $out = qx{/usr/bin/perl $compute};
     LOGINF("compute_costs.cgi invoked to publish intervals/hourly.");
     1;
   };
 
-  # Return normalized data (rows alias kept)
+  # Return normalized data
   my $prices = $norm->{prices} // [];
   my $out = {
     from                  => $start_iso,
@@ -310,7 +304,7 @@ my $ok = eval {
     rows                  => $prices,
     interval_count        => scalar(@$prices),
   };
-  print JSON::PP->new->pretty(1)->encode($out);  # preserve Tie::IxHash order
+  print JSON::PP->new->pretty(1)->encode($out);
   return 1;
 };
 
