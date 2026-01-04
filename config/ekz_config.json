@@ -33,5 +33,12 @@
   "fetch_event_logging": true,
   "fetch_event_retain_days": 14,
   "fetch_raw_archiving": true,
-  "fetch_raw_retain_days": 7
+  "fetch_raw_retain_days": 7,
+
+  "influx_enabled": true,
+  "influx_version": "2",
+  "influx_url": "http://influxvm:8086",
+  "influx_org": "your-org",
+  "influx_bucket": "ekz",
+  "influx_token": "REPLACE_WITH_TOKEN"
 }
