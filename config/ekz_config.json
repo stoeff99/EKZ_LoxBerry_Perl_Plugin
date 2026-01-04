@@ -37,8 +37,8 @@
 
   "influx_enabled": true,
   "influx_version": "2",
-  "influx_url": "http://influxvm:8086",
-  "influx_org": "your-org",
+  "influx_url": "http://192.168.20.12:8086",
+  "influx_org": "Private",
   "influx_bucket": "ekz",
-  "influx_token": "REPLACE_WITH_TOKEN"
+  "influx_token": "E1Xw8tEl0by7-7vfxc0GUVWWKG5olSLiD7YBf6d54pF1wxv3ttuJWtvWnwEib96JPGvXhtiJl7xIRXKtsgsMAA=="
 }
