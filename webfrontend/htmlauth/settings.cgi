@@ -54,11 +54,13 @@ for my $k (qw/
   mqtt_topic_raw mqtt_topic_summary
   mqtt_topic_intervals mqtt_topic_hourly
   fallback_tariff_name token_store_path retries
+  influx_url influx_version influx_org influx_bucket influx_db influx_user
 /) {
   $esc{$k} = h($cfg->{$k}//'');
 }
-my $checked_mqtt_enabled   = $cfg->{mqtt_enabled} ? 'checked' : '';
-my $checked_publish_relative = $cfg->{publish_relative_hourly} ? 'checked' : '';
+my $checked_mqtt_enabled      = $cfg->{mqtt_enabled} ? 'checked' : '';
+my $checked_publish_relative  = $cfg->{publish_relative_hourly} ? 'checked' : '';
+my $checked_influx_enabled    = $cfg->{influx_enabled} ? 'checked' : '';
 
 # Select helpers for fetch schedule
 my $fs = $cfg->{fetch_schedule} // '';
@@ -66,6 +68,11 @@ my $sel_schedule_1  = ($fs eq '1')  ? 'selected' : '';
 my $sel_schedule_2  = ($fs eq '2')  ? 'selected' : '';
 my $sel_schedule_12 = ($fs eq '12') ? 'selected' : '';
 my $sel_schedule_24 = ($fs eq '24') ? 'selected' : '';
+
+# Select helper for influx version
+my $iv = $cfg->{influx_version} // '2';
+my $sel_influx_v2 = ($iv eq '2') ? 'selected' : '';
+my $sel_influx_v1 = ($iv eq '1') ? 'selected' : '';
 
 # Handle POST to update config JSON (write back to $LBPDATADIR/ekz_config.json)
 my $msg = '';
@@ -77,6 +84,7 @@ if ($q->request_method eq 'POST') {
     mqtt_topic_raw mqtt_topic_summary
     mqtt_topic_intervals mqtt_topic_hourly
     fallback_tariff_name token_store_path fetch_schedule retries
+    influx_url influx_version influx_org influx_bucket influx_db influx_user
   /;
 
   # Update regular fields
@@ -88,6 +96,7 @@ if ($q->request_method eq 'POST') {
   # Boolean checkboxes
   $cfg->{mqtt_enabled} = $q->param('mqtt_enabled') ? JSON::PP::true : JSON::PP::false;
   $cfg->{publish_relative_hourly} = $q->param('publish_relative_hourly') ? JSON::PP::true : JSON::PP::false;
+  $cfg->{influx_enabled} = $q->param('influx_enabled') ? JSON::PP::true : JSON::PP::false;
 
   # Sensitive fields: only update if non-empty
   if (defined $q->param('client_secret')) {
@@ -97,6 +106,15 @@ if ($q->request_method eq 'POST') {
   if (defined $q->param('mqtt_password')) {
     my $newpw = $q->param('mqtt_password');
     $cfg->{mqtt_password} = $newpw if defined $newpw && $newpw ne '';
+  }
+  # Influx sensitive fields
+  if (defined $q->param('influx_token')) {
+    my $tok = $q->param('influx_token');
+    $cfg->{influx_token} = $tok if defined $tok && $tok ne '';
+  }
+  if (defined $q->param('influx_password')) {
+    my $pw = $q->param('influx_password');
+    $cfg->{influx_password} = $pw if defined $pw && $pw ne '';
   }
 
   # Write updated JSON
@@ -115,13 +133,17 @@ if ($q->request_method eq 'POST') {
 
   # Refresh escaped values and helpers after save so the form shows new values
   for my $k (keys %esc) { $esc{$k} = h($cfg->{$k}//''); }
-  $checked_mqtt_enabled = $cfg->{mqtt_enabled} ? 'checked' : '';
+  $checked_mqtt_enabled     = $cfg->{mqtt_enabled} ? 'checked' : '';
   $checked_publish_relative = $cfg->{publish_relative_hourly} ? 'checked' : '';
+  $checked_influx_enabled   = $cfg->{influx_enabled} ? 'checked' : '';
   $fs = $cfg->{fetch_schedule} // '';
   $sel_schedule_1  = ($fs eq '1')  ? 'selected' : '';
   $sel_schedule_2  = ($fs eq '2')  ? 'selected' : '';
   $sel_schedule_12 = ($fs eq '12') ? 'selected' : '';
   $sel_schedule_24 = ($fs eq '24') ? 'selected' : '';
+  $iv = $cfg->{influx_version} // '2';
+  $sel_influx_v2 = ($iv eq '2') ? 'selected' : '';
+  $sel_influx_v1 = ($iv eq '1') ? 'selected' : '';
 }
 
 # Render page using shared styles (same look as index.cgi)
@@ -207,6 +229,40 @@ print <<"HTML_HEAD";
         </fieldset>
 
         <fieldset>
+          <legend>InfluxDB</legend>
+          <label><input type="checkbox" name="influx_enabled" $checked_influx_enabled> Enable InfluxDB writes</label>
+
+          <label>Version</label>
+          <select name="influx_version" id="influx_version">
+            <option value="2" $sel_influx_v2>v2.x</option>
+            <option value="1" $sel_influx_v1>v1.x</option>
+          </select>
+
+          <label>URL</label>
+          <input name="influx_url" type="text" size="60" value="$esc{influx_url}" placeholder="http://influxvm:8086">
+
+          <div id="influx_v2_block">
+            <label>Organization</label>
+            <input name="influx_org" type="text" value="$esc{influx_org}" placeholder="your-org">
+            <label>Bucket</label>
+            <input name="influx_bucket" type="text" value="$esc{influx_bucket}" placeholder="ekz">
+            <label>Token <span class="small">(enter to update)</span></label>
+            <input type="password" name="influx_token" placeholder="••••••••">
+          </div>
+
+          <div id="influx_v1_block">
+            <label>Database</label>
+            <input name="influx_db" type="text" value="$esc{influx_db}" placeholder="ekz">
+            <label>Username (optional)</label>
+            <input name="influx_user" type="text" value="$esc{influx_user}">
+            <label>Password (optional) <span class="small">(enter to update)</span></label>
+            <input type="password" name="influx_password" placeholder="••••••••">
+          </div>
+
+          <div class="hint small">For InfluxDB v2, set URL + Org + Bucket + Token. For v1, set URL + DB (+ optional user/password).</div>
+        </fieldset>
+
+        <fieldset>
           <legend>Scheduling</legend>
           <label>Fetch frequency</label>
           <select name="fetch_schedule">
@@ -240,6 +296,22 @@ print <<"HTML_HEAD";
       </form>
     </div>
   </div>
+
+  <script>
+  // Simple toggler for Influx v1/v2 blocks
+  (function() {
+    const sel = document.getElementById('influx_version');
+    const v1  = document.getElementById('influx_v1_block');
+    const v2  = document.getElementById('influx_v2_block');
+    function apply() {
+      if (!sel || !v1 || !v2) return;
+      const val = sel.value || '2';
+      if (val === '1') { v1.style.display = ''; v2.style.display = 'none'; }
+      else             { v1.style.display = 'none'; v2.style.display = '';  }
+    }
+    if (sel) { sel.addEventListener('change', apply); apply(); }
+  })();
+  </script>
 </body>
 </html>
 HTML_HEAD
