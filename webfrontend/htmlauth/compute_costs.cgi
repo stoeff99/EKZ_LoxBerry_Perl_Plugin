@@ -3,6 +3,7 @@ use strict;
 use warnings;
 
 use CGI;
+use CGI::Carp qw(fatalsToBrowser warningsToBrowser);  # show errors in browser
 use JSON::PP;
 use File::Spec;
 use Time::Local;
@@ -32,7 +33,7 @@ sub read_latest_json {
   local $/ = undef;
   my $raw = <$fh>;
   close $fh;
-  my $doc = eval { decode_json($raw) };
+  my $doc = eval { JSON::PP->new->decode($raw) };   # FIX: use JSON::PP decoder
   if (!$doc) {
     return ($path, undef, { error => "invalid_json", message => "Could not parse tariffs_latest.json" });
   }
@@ -114,7 +115,6 @@ sub mqtt_publish {
   my $user = $cfg->{mqtt_username} // '';
   my $pass = $cfg->{mqtt_password} // '';
 
-  # Try Perl MQTT library if available and no auth required
   my $ok = 0;
   if ($user eq '') {
     eval {
@@ -126,13 +126,11 @@ sub mqtt_publish {
       $ok = 1;
       1;
     } or do {
-      # library not present or publish failed — fallback to mosquitto_pub below
       $ok = 0;
     };
   }
 
   if (!$ok) {
-    # fallback to mosquitto_pub CLI (keeps existing behaviour for auth/compat)
     my $tmp = File::Spec->catfile($lbpdatadir, 'mqtt_payload.tmp.json');
     open my $tfh, '>', $tmp or return 0;
     print $tfh $payload_json;
@@ -233,35 +231,29 @@ my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
 # --------------------------
 # Relative 24-hour view (now +0 .. now +23) — epoch-aligned matching
 # --------------------------
-# Parse ISO timestamp with offset into a UTC epoch (seconds since epoch).
 sub _iso_to_epoch {
   my ($iso) = @_;
   return undef unless defined $iso;
-  # Match:  YYYY-MM-DDTHH:MM:SS(+|-)HH:MM  or ...Z
   if ($iso =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(Z|([+\-])(\d{2}):(\d{2}))?$/) {
     my ($Y,$M,$D,$h,$m,$s,$z, $sign, $oh, $om) = ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10);
     $Y += 0; $M += 0; $D += 0; $h += 0; $m += 0; $s += 0;
-    # timegm expects (sec,min,hour,day,mon-1,year-1900)
     my $utc_epoch = timegm($s, $m, $h, $D, $M-1, $Y-1900);
     my $offset_secs = 0;
     if (defined $z && $z ne 'Z' && defined $sign && defined $oh) {
       $offset_secs = ($oh * 3600) + ($om * 60);
       $offset_secs *= ($sign eq '+') ? 1 : -1;
     }
-    # The ISO time represents local time with offset; UTC epoch = timegm(local) - offset
     return $utc_epoch - $offset_secs;
   }
   return undef;
 }
 
-# Build epoch -> hourly entry map (hour-start epoch)
 my %hour_epoch_map;
 for my $h (@hourly) {
   next unless ref $h eq 'HASH' && defined $h->{hour_start};
   my $iso = $h->{hour_start};
   my $e = _iso_to_epoch($iso);
   next unless defined $e;
-  # Normalize to hour-start epoch (round down to hour)
   my $hour_epoch = int($e / 3600) * 3600;
   $hour_epoch_map{$hour_epoch} = $h unless exists $hour_epoch_map{$hour_epoch};
 }
@@ -276,7 +268,6 @@ for my $off (0..23) {
     $hs  = $entry->{hour_start};
     $val = defined $entry->{avg_total_chf} ? ($entry->{avg_total_chf} + 0) : undef;
   } else {
-    # Fallback: format local hour-start (append local timezone offset)
     my $hs_local = strftime('%Y-%m-%dT%H:00:00', localtime($t));
     my $offstr = strftime('%z', localtime($t)); $offstr =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
     $hs = $hs_local . $offstr;
@@ -310,9 +301,7 @@ my $pub_relative_ok = 0;
 if (!$nopublish) {
   $pub_intervals_ok = mqtt_publish($cfg, $topic_intervals, $json_intervals) ? 1 : 0;
   $pub_hourly_ok    = mqtt_publish($cfg, $topic_hourly,    $json_hourly)    ? 1 : 0;
-
-  # Publish relative 24-hour view as well
-  $pub_relative_ok = mqtt_publish($cfg, $topic_relative, $json_relative) ? 1 : 0;
+  $pub_relative_ok  = mqtt_publish($cfg, $topic_relative,  $json_relative)  ? 1 : 0;
 }
 
 # --------------------------
@@ -321,8 +310,8 @@ if (!$nopublish) {
 sub _escape_tag {
   my ($v) = @_;
   $v //= '';
-  $v =~ s/[, ]/\\$&/g; # escape comma and space
-  $v =~ s/=/\\=/g;     # escape equals
+  $v =~ s/[, ]/\\$&/g;
+  $v =~ s/=/\\=/g;
   return $v;
 }
 
@@ -338,7 +327,7 @@ sub _line {
   for my $k (sort keys %{$fields_hashref // {}}) {
     my $kk = $k; $kk =~ s/[, =]/\\$&/g;
     my $v = $fields_hashref->{$k};
-    push @fields, "$kk=$v"; # numeric fields only
+    push @fields, "$kk=$v";
   }
   return join(',', $m, (scalar(@tags) ? join(',', @tags) :())) . ' ' . join(',', @fields) . ' ' . int($epoch_s) . '000000000';
 }
@@ -362,7 +351,6 @@ sub influx_write_lines {
     $url = "$base/api/v2/write?org=$org&bucket=$bucket&precision=" . ($precision // 'ns');
     $headers{'Authorization'} = "Token $token";
   } else {
-    # v1: simple query auth
     my $db   = $cfg->{influx_db} // '';
     die "influx_url/db required for InfluxDB v1" unless $base && $db;
     my $u = $cfg->{influx_user}     // '';
@@ -388,7 +376,6 @@ if ($cfg->{influx_enabled}) {
   my $source = $doc->{source} // 'unknown';
   my $ems    = $cfg->{ems_instance_id} // '';
 
-  # Intervals measurement using your computed fields
   for my $it (@intervals) {
     my $t = _iso_to_epoch($it->{start_timestamp}); next unless defined $t;
     my %tags = ( source => $source, ems => $ems );
@@ -401,7 +388,6 @@ if ($cfg->{influx_enabled}) {
     push @influx_lines, _line('ekz_tariff_intervals', \%tags, \%fields, $t);
   }
 
-  # Hourly measurement using your computed fields
   for my $h (@hourly) {
     next unless ref $h eq 'HASH' && defined $h->{hour_start};
     my $t = _iso_to_epoch($h->{hour_start}); next unless defined $t;
@@ -415,7 +401,7 @@ if ($cfg->{influx_enabled}) {
     push @influx_lines, _line('ekz_tariff_hourly', \%tags, \%fields, $t);
   }
 
-  $influx_ok = influx_write_lines($cfg, \@influx_lines, 'ns'); # timestamps in ns
+  $influx_ok = influx_write_lines($cfg, \@influx_lines, 'ns');
 }
 
 my $out = {
@@ -436,7 +422,7 @@ my $out = {
     relative_topic           => $topic_relative,
     publish_relative_ok      => $pub_relative_ok ? JSON::PP::true : JSON::PP::false,
   },
-  influx_written          => JSON::PP::bool($influx_ok ? 1 : 0),  # ADDED status
+  influx_written          => ($influx_ok ? JSON::PP::true : JSON::PP::false),  # FIX: use true/false
 };
 
 print JSON::PP->new->pretty(1)->encode($out);
