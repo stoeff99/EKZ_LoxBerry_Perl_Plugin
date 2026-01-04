@@ -4,12 +4,17 @@ use warnings;
 
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI;
+use FindBin;
+require "$FindBin::Bin/common.pl";  # get SDK globals like $lbpurl
+
+# SDK globals
+our ($lbpurl);
 
 my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
 
-# Derive base URL from this script path
-my $BASEURL = do {
+# Prefer LoxBerry plugin base URL for assets/links
+my $BASEURL    = $lbpurl // do {
   my $p = $ENV{SCRIPT_NAME} // '';
   $p =~ s{/[^/]+$}{};
   $p || '.'
@@ -66,7 +71,7 @@ print <<"HTML_HEAD";
   <div class="container">
     <div class="card">
       <div class="controls">
-        <button id="btnFetch" class="btn"><span class="emoji">⚡</span> Fetch now and draw</button>
+        <button id="btnFetch" class="btn"><span class="emoji">📊</span> Compute and draw (no fetch)</button>
         <label for="view" class="sr-only">View</label>
         <select id="view">
           <option value="intervals" selected>15‑minute intervals (total)</option>
@@ -74,7 +79,7 @@ print <<"HTML_HEAD";
         </select>
         <span class="muted small">Bars colored by relative level (very low → very high)</span>
       </div>
-      <div id="status" class="status muted">Press “Fetch now and draw”. This fetches (backend), computes for UI (no MQTT), then renders.</div>
+      <div id="status" class="status muted">Press “Compute and draw”. This uses the latest saved JSON (no EKZ fetch), computes for UI, then renders.</div>
       <div id="chartwrap">
         <canvas id="priceChart" aria-label="Price chart" role="img"></canvas>
       </div>
@@ -274,15 +279,12 @@ print <<'JAVASCRIPT';
     chart = new Chart(ctx, { data, options });
   }
 
-  async function fetchBackendAndCompute() {
-    setStatus('Fetching (backend)…');
-    const r1 = await fetch('run_rolling_fetch.cgi?force=1', { cache: 'no-store' });
-    if (!r1.ok) throw new Error('Fetch backend failed: HTTP ' + r1.status);
-
-    setStatus('Computing costs for UI…');
-    const r2 = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
-    if (!r2.ok) throw new Error('compute_costs failed: HTTP ' + r2.status);
-    lastReport = await r2.json();
+  // Compute only (no backend fetch); uses latest tariffs_latest.json
+  async function computeAndDrawLatest() {
+    setStatus('Computing costs from latest file…');
+    const r = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
+    if (!r.ok) throw new Error('compute_costs failed: HTTP ' + r.status);
+    lastReport = await r.json();
 
     if (lastReport && lastReport.error) {
       throw new Error('compute_costs error: ' + (lastReport.message || lastReport.error));
@@ -301,7 +303,8 @@ print <<'JAVASCRIPT';
     const btn = e.currentTarget;
     btn.disabled = true;
     try {
-      await fetchBackendAndCompute();
+      // IMPORTANT: do NOT call run_rolling_fetch.cgi here
+      await computeAndDrawLatest();
     } catch (err) {
       setStatus(err.message, true);
     } finally {
