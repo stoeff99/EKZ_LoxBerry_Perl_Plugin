@@ -28,7 +28,7 @@
   "mqtt_topic_summary": "ekz/ems/tariffs/now_plus_24h",
   "mqtt_topic_intervals": "ekz/ems/tariffs/intervals",
   "mqtt_topic_hourly": "ekz/ems/tariffs/hourly",
-  "fetch_schedule": "24"
+  "fetch_schedule": "24",
 
   "fetch_event_logging": true,
   "fetch_event_retain_days": 14,
