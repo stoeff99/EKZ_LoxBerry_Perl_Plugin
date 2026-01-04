@@ -347,12 +347,20 @@ sub influx_write_lines {
     my $org    = $cfg->{influx_org}    // '';
     my $bucket = $cfg->{influx_bucket} // '';
     my $token  = $cfg->{influx_token}  // '';
-    die "influx_url/org/bucket/token required for InfluxDB v2" unless $base && $org && $bucket && $token;
+    # FAIL-SOFT: missing config => skip writes (return 0), but DO NOT die
+    unless ($base && $org && $bucket && $token) {
+      eval { LOGERR("Influx v2 missing config: url/org/bucket/token required"); 1; };
+      return 0;
+    }
     $url = "$base/api/v2/write?org=$org&bucket=$bucket&precision=" . ($precision // 'ns');
     $headers{'Authorization'} = "Token $token";
   } else {
+    # v1: simple query auth
     my $db   = $cfg->{influx_db} // '';
-    die "influx_url/db required for InfluxDB v1" unless $base && $db;
+    unless ($base && $db) {
+      eval { LOGERR("Influx v1 missing config: url/db required"); 1; };
+      return 0;
+    }
     my $u = $cfg->{influx_user}     // '';
     my $p = $cfg->{influx_password} // '';
     my $auth = ($u ne '') ? "&u=$u&p=$p" : '';
@@ -361,14 +369,16 @@ sub influx_write_lines {
 
   my $body = join("\n", @{$lines_ref // []});
   my $res = $ua->post($url, %headers, Content => $body);
-  return 1 if $res->is_success;
-
-  eval { LOGERR("Influx write failed: HTTP ".$res->code." - ".$res->decoded_content); 1; };
-  return 0;
+  if ($res->is_success) {
+    return 1;
+  } else {
+    eval { LOGERR("Influx write failed: HTTP ".$res->code." - ".$res->decoded_content); 1; };
+    return 0;
+  }
 }
 
 # --------------------------
-# Build Influx payload and write (ADDED)
+# Build Influx payload and write
 # --------------------------
 my $influx_ok = 1;
 if ($cfg->{influx_enabled}) {
@@ -376,6 +386,7 @@ if ($cfg->{influx_enabled}) {
   my $source = $doc->{source} // 'unknown';
   my $ems    = $cfg->{ems_instance_id} // '';
 
+  # Intervals
   for my $it (@intervals) {
     my $t = _iso_to_epoch($it->{start_timestamp}); next unless defined $t;
     my %tags = ( source => $source, ems => $ems );
@@ -388,6 +399,7 @@ if ($cfg->{influx_enabled}) {
     push @influx_lines, _line('ekz_tariff_intervals', \%tags, \%fields, $t);
   }
 
+  # Hourly
   for my $h (@hourly) {
     next unless ref $h eq 'HASH' && defined $h->{hour_start};
     my $t = _iso_to_epoch($h->{hour_start}); next unless defined $t;
@@ -401,6 +413,7 @@ if ($cfg->{influx_enabled}) {
     push @influx_lines, _line('ekz_tariff_hourly', \%tags, \%fields, $t);
   }
 
+  # If config missing or write fails, influx_ok becomes false but JSON still returns
   $influx_ok = influx_write_lines($cfg, \@influx_lines, 'ns');
 }
 
@@ -422,7 +435,7 @@ my $out = {
     relative_topic           => $topic_relative,
     publish_relative_ok      => $pub_relative_ok ? JSON::PP::true : JSON::PP::false,
   },
-  influx_written          => ($influx_ok ? JSON::PP::true : JSON::PP::false),  # FIX: use true/false
+  influx_written          => ($influx_ok ? JSON::PP::true : JSON::PP::false),
 };
 
 print JSON::PP->new->pretty(1)->encode($out);
