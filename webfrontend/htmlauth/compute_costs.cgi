@@ -9,6 +9,7 @@ use Time::Local;
 use POSIX qw(strftime);
 use FindBin;
 use LoxBerry::System;
+use LWP::UserAgent;  # ADDED for Influx HTTP writes
 require "$FindBin::Bin/common.pl";
 
 # SDK globals
@@ -314,6 +315,109 @@ if (!$nopublish) {
   $pub_relative_ok = mqtt_publish($cfg, $topic_relative, $json_relative) ? 1 : 0;
 }
 
+# --------------------------
+# InfluxDB helpers (ADDED)
+# --------------------------
+sub _escape_tag {
+  my ($v) = @_;
+  $v //= '';
+  $v =~ s/[, ]/\\$&/g; # escape comma and space
+  $v =~ s/=/\\=/g;     # escape equals
+  return $v;
+}
+
+sub _line {
+  my ($measurement, $tags_hashref, $fields_hashref, $epoch_s) = @_;
+  my $m = $measurement; $m =~ s/[, ]/\\$&/g;
+  my @tags;
+  for my $k (sort keys %{$tags_hashref // {}}) {
+    my $kk = $k; $kk =~ s/[, =]/\\$&/g;
+    push @tags, "$kk="._escape_tag($tags_hashref->{$k});
+  }
+  my @fields;
+  for my $k (sort keys %{$fields_hashref // {}}) {
+    my $kk = $k; $kk =~ s/[, =]/\\$&/g;
+    my $v = $fields_hashref->{$k};
+    push @fields, "$kk=$v"; # numeric fields only
+  }
+  return join(',', $m, (scalar(@tags) ? join(',', @tags) :())) . ' ' . join(',', @fields) . ' ' . int($epoch_s) . '000000000';
+}
+
+sub influx_write_lines {
+  my ($cfg, $lines_ref, $precision) = @_;
+  return 1 unless $cfg->{influx_enabled};
+
+  my $version = ($cfg->{influx_version} // '2') . '';
+  my $base    = $cfg->{influx_url} // '';
+  my $ua      = LWP::UserAgent->new(timeout => 20);
+
+  my $url;
+  my %headers = ( 'Content-Type' => 'text/plain' );
+
+  if ($version eq '2') {
+    my $org    = $cfg->{influx_org}    // '';
+    my $bucket = $cfg->{influx_bucket} // '';
+    my $token  = $cfg->{influx_token}  // '';
+    die "influx_url/org/bucket/token required for InfluxDB v2" unless $base && $org && $bucket && $token;
+    $url = "$base/api/v2/write?org=$org&bucket=$bucket&precision=" . ($precision // 'ns');
+    $headers{'Authorization'} = "Token $token";
+  } else {
+    # v1: simple query auth
+    my $db   = $cfg->{influx_db} // '';
+    die "influx_url/db required for InfluxDB v1" unless $base && $db;
+    my $u = $cfg->{influx_user}     // '';
+    my $p = $cfg->{influx_password} // '';
+    my $auth = ($u ne '') ? "&u=$u&p=$p" : '';
+    $url = "$base/write?db=$db$auth&precision=" . ($precision // 'ns');
+  }
+
+  my $body = join("\n", @{$lines_ref // []});
+  my $res = $ua->post($url, %headers, Content => $body);
+  return 1 if $res->is_success;
+
+  eval { LOGERR("Influx write failed: HTTP ".$res->code." - ".$res->decoded_content); 1; };
+  return 0;
+}
+
+# --------------------------
+# Build Influx payload and write (ADDED)
+# --------------------------
+my $influx_ok = 1;
+if ($cfg->{influx_enabled}) {
+  my @influx_lines;
+  my $source = $doc->{source} // 'unknown';
+  my $ems    = $cfg->{ems_instance_id} // '';
+
+  # Intervals measurement using your computed fields
+  for my $it (@intervals) {
+    my $t = _iso_to_epoch($it->{start_timestamp}); next unless defined $t;
+    my %tags = ( source => $source, ems => $ems );
+    my %fields = (
+      total_chf        => ($it->{total_chf}        // 0) + 0,
+      chf_per_kwh_sum  => ($it->{chf_per_kwh_sum}  // 0) + 0,
+      chf_m_per_hour   => ($it->{chf_m_per_hour}   // 0) + 0,
+      month_hours_used => ($it->{month_hours_used} // 0) + 0,
+    );
+    push @influx_lines, _line('ekz_tariff_intervals', \%tags, \%fields, $t);
+  }
+
+  # Hourly measurement using your computed fields
+  for my $h (@hourly) {
+    next unless ref $h eq 'HASH' && defined $h->{hour_start};
+    my $t = _iso_to_epoch($h->{hour_start}); next unless defined $t;
+    my %tags = ( source => $source, ems => $ems );
+    my %fields = (
+      avg_total_chf       => ($h->{avg_total_chf}       // 0) + 0,
+      avg_chf_per_kwh_sum => ($h->{avg_chf_per_kwh_sum} // 0) + 0,
+      avg_chf_m_per_hour  => ($h->{avg_chf_m_per_hour}  // 0) + 0,
+      intervals_count     => ($h->{intervals_count}     // 0) + 0,
+    );
+    push @influx_lines, _line('ekz_tariff_hourly', \%tags, \%fields, $t);
+  }
+
+  $influx_ok = influx_write_lines($cfg, \@influx_lines, 'ns'); # timestamps in ns
+}
+
 my $out = {
   source_file             => $src_path,
   publication_timestamp   => $pub_ts,
@@ -332,6 +436,7 @@ my $out = {
     relative_topic           => $topic_relative,
     publish_relative_ok      => $pub_relative_ok ? JSON::PP::true : JSON::PP::false,
   },
+  influx_written          => JSON::PP::bool($influx_ok ? 1 : 0),  # ADDED status
 };
 
 print JSON::PP->new->pretty(1)->encode($out);
