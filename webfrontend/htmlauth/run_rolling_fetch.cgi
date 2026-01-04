@@ -292,8 +292,10 @@ my $ok = eval {
   my $grace = int($cfg->{publish_grace_minutes} // 5);
 
   log_event($cfg, $rid, 'start', {
-    schedule => $schedule, force => JSON::PP::bool($force),
-    param_today => JSON::PP::bool($want_today), grace_minutes => $grace,
+    schedule    => $schedule,
+    force       => ($force ? JSON::PP::true : JSON::PP::false),
+    param_today => ($want_today ? JSON::PP::true : JSON::PP::false),
+    grace_minutes => $grace,
   });
 
   my $last_file = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
@@ -450,7 +452,10 @@ my $ok = eval {
         LOGINF("Applied public fallback tariffs and folded regional fee (%.4f CHF/kWh) into integrated%s.",
           $fee_kwh, ($zero_reg ? " (regional CHF_kWh zeroed)" : ""));
         save_raw_payload($cfg, $rid, 'raw_public_fallback', $payload);
-        log_event($cfg, $rid, 'fallback_applied', { fee_kwh => $fee_kwh+0, zero_regional => JSON::PP::bool($zero_reg) });
+        log_event($cfg, $rid, 'fallback_applied', {
+          fee_kwh      => $fee_kwh+0,
+          zero_regional => ($zero_reg ? JSON::PP::true : JSON::PP::false),
+        });
       } else {
         LOGERR("Public fallback tariffs failed; keeping customerTariffs payload. Error: " . ($@ // 'unknown'));
         log_event($cfg, $rid, 'fallback_failed', { error => ($@ // 'unknown') });
@@ -513,13 +518,13 @@ my $ok = eval {
 
   # Publish raw payload
   my $mqtt_ok = publish_tariffs_to_mqtt($cfg, $payload, $source, $start_iso, $end_iso);
-  log_event($cfg, $rid, 'publish_raw', { mqtt_ok => JSON::PP::bool($mqtt_ok ? 1 : 0) });
+  log_event($cfg, $rid, 'publish_raw', { mqtt_ok => ($mqtt_ok ? JSON::PP::true : JSON::PP::false) });
 
   # Trigger compute publishes
   my $compute = File::Spec->catfile($FindBin::Bin, 'compute_costs.cgi');
   my $compute_rc = system('/usr/bin/perl', $compute);
   my $compute_ok = ($compute_rc == 0);
-  log_event($cfg, $rid, 'compute', { ok => JSON::PP::bool($compute_ok ? 1 : 0), rc => ($compute_rc >> 8) });
+  log_event($cfg, $rid, 'compute', { ok => ($compute_ok ? JSON::PP::true : JSON::PP::false), rc => ($compute_rc >> 8) });
   LOGINF("compute_costs.cgi invoked to publish intervals/hourly.");
 
   # Response
