@@ -35,7 +35,6 @@ print <<"HTML_HEAD";
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
   <link rel="stylesheet" href="$BASEURL/style.css">
-  <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251220">
   <style>
     #chartwrap { position: relative; width: 100%; min-height: 340px; }
     canvas { max-height: 520px; }
