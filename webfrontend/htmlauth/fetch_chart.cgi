@@ -5,7 +5,7 @@ use warnings;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI;
 use FindBin;
-require "$FindBin::Bin/common.pl";  # get SDK globals like $lbpurl
+require "$FindBin::Bin/common.pl";  # SDK globals like $lbpurl
 
 # SDK globals
 our ($lbpurl);
@@ -14,18 +14,19 @@ my $q = CGI->new;
 print $q->header('text/html; charset=utf-8');
 
 # Prefer LoxBerry plugin base URL for assets/links
-my $BASEURL    = $lbpurl // do {
+my $BASEURL = $lbpurl // do {
   my $p = $ENV{SCRIPT_NAME} // '';
   $p =~ s{/[^/]+$}{};
   $p || '.'
 };
-my $ASSET_BASE = "$BASEURL/assets";
+
+# Conditional assets to avoid 404s
+my $HAS_STYLE  = -f "$FindBin::Bin/style.css" ? 1 : 0;
+my $HAS_BANNER = -f "$FindBin::Bin/Icons/banner.jpg" ? 1 : 0;
+
 my $ICON_BASE  = "$BASEURL/Icons";
 
-# Use an HTML-escaped base URL for href attributes
-my $SAFE_BASEURL = CGI::escapeHTML($BASEURL);
-
-# HTML head and body up to the <script> tag (interpolate variables)
+# HTML head and body up to the <script> tag
 print <<"HTML_HEAD";
 <!doctype html>
 <html>
@@ -33,26 +34,36 @@ print <<"HTML_HEAD";
   <meta charset="utf-8">
   <title>EKZ – Fetch & Chart</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
-  <link rel="stylesheet" href="$BASEURL/style.css">
+HTML_HEAD
+
+# Include banner preload only if present
+print qq{  <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">\n} if $HAS_BANNER;
+
+# Include style.css only if present; otherwise rely on inline styles below
+print qq{  <link rel="stylesheet" href="$BASEURL/style.css">\n} if $HAS_STYLE;
+
+print <<"HTML_HEAD_CONTD";
   <style>
-    #chartwrap { position: relative; width: 100%; min-height: 340px; }
-    canvas { max-height: 520px; }
+    /* Minimal inline styles to avoid external CSS dependency */
+    body { background:#0b1220; color:#e5e7eb; margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,sans-serif; }
+    .app-header { padding: 10px 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
+    .title { font-size: 1.25rem; font-weight: 600; }
+    .nav-actions { display:flex; gap:.5rem; padding: 10px 16px; border-bottom: 1px solid rgba(255,255,255,.05); }
+    .btn { padding:.45rem .8rem; border-radius:8px; border:1px solid rgba(255,255,255,.18); background:#0f172a; color:#e5e7eb; cursor:pointer; text-decoration:none; display:inline-block }
+    .btn:hover { background:#111827 }
+    .container { padding: 16px; }
+    .card { background:#0f172a; border:1px solid rgba(255,255,255,.12); border-radius:10px; padding:16px; }
     .controls { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin-bottom:.5rem;}
     .legend { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:.5rem; color:#cbd5e1 }
     .dot { width:11px; height:11px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle }
     .muted { color:#94a3b8 }
-    .btn { padding:.45rem .8rem; border-radius:8px; border:1px solid rgba(255,255,255,.18); background:#0f172a; color:#e5e7eb; cursor:pointer }
-    .btn:hover { background:#111827 }
-    select { padding:.35rem .6rem; border-radius:8px; border:1px solid rgba(255,255,255,.15); background:#0b1220; color:#e5e7eb }
     .status { margin:.4rem 0 .3rem 0; font-size:.9rem }
+    #chartwrap { position: relative; width: 100%; min-height: 340px; }
+    canvas { max-height: 520px; }
     .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0 }
   </style>
-  <!-- Try to load Chart.js early; we still have an async fallback in JS -->
+  <!-- Load Chart.js from CDN; local fallback removed to avoid 404 -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script>
-    const BASEURL = "$BASEURL";
-  </script>
 </head>
 <body id="ekz-plugin" class="plugincontent">
   <div class="app-header">
@@ -70,7 +81,7 @@ print <<"HTML_HEAD";
   <div class="container">
     <div class="card">
       <div class="controls">
-        <button id="btnFetch" class="btn"><span class="emoji">📊</span> Compute and draw (no fetch)</button>
+        <button id="btnCompute" class="btn"><span class="emoji">📊</span> Compute and draw (no fetch)</button>
         <label for="view" class="sr-only">View</label>
         <select id="view">
           <option value="intervals" selected>15‑minute intervals (total)</option>
@@ -78,7 +89,7 @@ print <<"HTML_HEAD";
         </select>
         <span class="muted small">Bars colored by relative level (very low → very high)</span>
       </div>
-      <div id="status" class="status muted">Press “Compute and draw”. This uses the latest saved JSON (no EKZ fetch), computes for UI, then renders.</div>
+      <div id="status" class="status muted">This uses the latest saved JSON (no EKZ fetch), computes for UI, then renders.</div>
       <div id="chartwrap">
         <canvas id="priceChart" aria-label="Price chart" role="img"></canvas>
       </div>
@@ -92,16 +103,16 @@ print <<"HTML_HEAD";
   </div>
 
   <script>
-HTML_HEAD
+HTML_HEAD_CONTD
 
 # Emit JS with a single-quoted heredoc
 print <<'JAVASCRIPT';
 (() => {
   const $ = (sel) => document.querySelector(sel);
-  const status = $('#status');
-  const viewSel = $('#view');
-  const btnFetch = $('#btnFetch');
-  const ctx = document.getElementById('priceChart').getContext('2d');
+  const status   = $('#status');
+  const viewSel  = $('#view');
+  const btnCompute = $('#btnCompute');
+  const ctx      = document.getElementById('priceChart').getContext('2d');
 
   let chart;
   let lastReport = null;
@@ -111,35 +122,10 @@ print <<'JAVASCRIPT';
     status.style.color = isError ? '#ef4444' : '#94a3b8';
   }
 
-  function loadScript(src) {
-    return new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = src;
-      s.async = true;
-      s.onload = () => resolve();
-      s.onerror = () => reject(new Error('Failed to load ' + src));
-      document.head.appendChild(s);
-    });
-  }
   async function ensureChartLib() {
     if (window.Chart) return;
-    try { await loadScript('https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js'); } catch {}
-    if (window.Chart) return;
-    const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chart.umd.min.js';
-    try { await loadScript(local); } catch {}
-    if (!window.Chart) throw new Error('Chart.js not available');
-  }
-  async function ensureTimeAdapter() {
-    const hasAdapter = () => !!(window.Chart && Chart._adapters && Chart._adapters._date && Chart._adapters._date.parse);
-    if (hasAdapter()) return;
-    try {
-      await loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js');
-    } catch (e) {
-      console.warn('CDN adapter failed:', e.message);
-    }
-    if (hasAdapter()) return;
-    const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chartjs-adapter-date-fns.bundle.min.js';
-    try { await loadScript(local); } catch (e) { console.error('Local adapter failed:', e.message); }
+    // CDN already loaded in <head>; if it failed, show a clear error
+    throw new Error('Chart.js not available');
   }
 
   function colorByQuantiles(values) {
@@ -180,100 +166,55 @@ print <<'JAVASCRIPT';
 
   async function renderChart(mode) {
     await ensureChartLib();
-    await ensureTimeAdapter();
 
     const unit = mode === 'hourly' ? 'hour' : 'minute';
     const points = pointsFromReport(mode);
     const colorFn = colorByQuantiles(points.map(p => p.y));
-    const adapterReady = !!(window.Chart && Chart._adapters && Chart._adapters._date && Chart._adapters._date.parse);
 
+    // Destroy existing chart if present
     const existing = (window.Chart && Chart.getChart) ? Chart.getChart(document.getElementById('priceChart')) : null;
     if (existing) existing.destroy();
 
-    let data, options;
-    if (adapterReady) {
-      data = {
-        datasets: [{
-          type: 'bar',
-          label: 'Total',
-          data: points,
-          parsing: false,
-          backgroundColor: points.map(p => colorFn(p.y)),
-          borderRadius: 4,
-        }]
-      };
-      options = {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: {
-            type: 'time',
-            time: { unit, displayFormats: { hour: 'HH:mm', minute: 'HH:mm' } },
-            ticks: { source: 'data', color: '#cbd5e1', maxRotation: 0, autoSkip: true },
-            grid: { color: 'rgba(148,163,184,0.15)' }
-          },
-          y: {
-            ticks: { color: '#cbd5e1' },
-            grid: { color: 'rgba(148,163,184,0.15)' },
-            title: { display: true, text: 'CHF/kWh', color: '#cbd5e1' }
-          }
-        },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              title: (items) => {
-                const ts = items?.[0]?.parsed?.x;
-                if (!ts) return '';
-                const d = new Date(ts);
-                return isNaN(d) ? String(ts) : d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', weekday: 'short', month: 'short', day: '2-digit' });
-              },
-              label: (ctx) => ` Total: ${Number(ctx.parsed.y).toFixed(4)} CHF/kWh`
-            }
-          }
-        }
-      };
-    } else {
-      const hourly = mode === 'hourly';
-      const labels = points.map(p => fmtLabel(p.x, hourly));
-      const values = points.map(p => p.y);
+    // Adapter-less mode: use category labels
+    const hourly = mode === 'hourly';
+    const labels = points.map(p => fmtLabel(p.x, hourly));
+    const values = points.map(p => p.y);
 
-      data = {
-        labels,
-        datasets: [{
-          type: 'bar',
-          label: 'Total',
-          data: values,
-          backgroundColor: values.map(v => colorFn(v)),
-          borderRadius: 4,
-        }]
-      };
-      options = {
-        responsive: true,
-        maintainAspectRatio: false,
-        scales: {
-          x: {
-            type: 'category',
-            ticks: { color: '#cbd5e1', maxRotation: 0, autoSkip: true },
-            grid: { color: 'rgba(148,163,184,0.15)' }
-          },
-          y: {
-            ticks: { color: '#cbd5e1' },
-            grid: { color: 'rgba(148,163,184,0.15)' },
-            title: { display: true, text: 'CHF/kWh', color: '#cbd5e1' }
-          }
+    const data = {
+      labels,
+      datasets: [{
+        type: 'bar',
+        label: 'Total',
+        data: values,
+        backgroundColor: values.map(v => colorFn(v)),
+        borderRadius: 4,
+      }]
+    };
+    const options = {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          type: 'category',
+          ticks: { color: '#cbd5e1', maxRotation: 0, autoSkip: true },
+          grid: { color: 'rgba(148,163,184,0.15)' }
         },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            callbacks: {
-              title: (items) => items?.[0]?.label ?? '',
-              label: (ctx) => ` Total: ${Number(ctx.raw).toFixed(4)} CHF/kWh`
-            }
+        y: {
+          ticks: { color: '#cbd5e1' },
+          grid: { color: 'rgba(148,163,184,0.15)' },
+          title: { display: true, text: 'CHF/kWh', color: '#cbd5e1' }
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: (items) => items?.[0]?.label ?? '',
+            label: (ctx) => ` Total: ${Number(ctx.raw).toFixed(4)} CHF/kWh`
           }
         }
-      };
-    }
+      }
+    };
 
     chart = new Chart(ctx, { data, options });
   }
@@ -283,7 +224,14 @@ print <<'JAVASCRIPT';
     setStatus('Computing costs from latest file…');
     const r = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
     if (!r.ok) throw new Error('compute_costs failed: HTTP ' + r.status);
-    lastReport = await r.json();
+    const text = await r.text();
+    if (!text || text.trim() === '') throw new Error('Empty JSON from compute_costs.cgi');
+    try {
+      lastReport = JSON.parse(text);
+    } catch (e) {
+      console.error('Bad JSON:', text);
+      throw e;
+    }
 
     if (lastReport && lastReport.error) {
       throw new Error('compute_costs error: ' + (lastReport.message || lastReport.error));
@@ -297,7 +245,7 @@ print <<'JAVASCRIPT';
     setStatus(`Ready. Intervals: ${ic}, hours: ${hc}.`);
   }
 
-  btnFetch.addEventListener('click', async (e) => {
+  btnCompute.addEventListener('click', async (e) => {
     e.preventDefault();
     const btn = e.currentTarget;
     btn.disabled = true;
@@ -317,16 +265,7 @@ print <<'JAVASCRIPT';
   (async () => {
     try {
       setStatus('Loading computed costs…');
-      const r = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
-      if (!r.ok) throw new Error('compute_costs failed: HTTP ' + r.status);
-      lastReport = await r.json();
-
-      if (lastReport && lastReport.error) {
-        throw new Error('compute_costs error: ' + (lastReport.message || lastReport.error));
-      }
-
-      await renderChart(viewSel.value);
-      setStatus('Ready.');
+      await computeAndDrawLatest();
     } catch (err) {
       setStatus(err.message, true);
     }
