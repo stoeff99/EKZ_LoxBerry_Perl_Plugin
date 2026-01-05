@@ -219,6 +219,11 @@ Plugin log:
 Cron update log (if an error occurs while writing cron):
 - `/opt/loxberry/data/plugins/ekz_plugin/cron_update.log`
 
+Fetch records (ring buffer - last 10 successful fetches):
+- `/opt/loxberry/data/plugins/ekz_plugin/fetch_records/fetch_record_00.json` (most recent)
+- `/opt/loxberry/data/plugins/ekz_plugin/fetch_records/fetch_record_09.json` (oldest)
+- See [docs/RING_BUFFER.md](docs/RING_BUFFER.md) for details
+
 Common issues:
 - 401 unauthorized_client during sign‑in:
   - Check `client_id/client_secret`, realm, and environment (prod vs test).
