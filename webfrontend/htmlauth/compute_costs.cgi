@@ -6,11 +6,11 @@ use CGI;
 use CGI::Carp qw(fatalsToBrowser warningsToBrowser);  # show errors in browser
 use JSON::PP;
 use File::Spec;
-use Time::Local;
+use Time::Local qw(timegm timelocal);
 use POSIX qw(strftime);
 use FindBin;
 use LoxBerry::System;
-use LWP::UserAgent;  # ADDED for Influx HTTP writes
+use LWP::UserAgent;  # for Influx HTTP writes
 require "$FindBin::Bin/common.pl";
 
 # SDK globals
@@ -33,7 +33,7 @@ sub read_latest_json {
   local $/ = undef;
   my $raw = <$fh>;
   close $fh;
-  my $doc = eval { JSON::PP->new->decode($raw) };   # FIX: use JSON::PP decoder
+  my $doc = eval { JSON::PP->new->decode($raw) };
   if (!$doc) {
     return ($path, undef, { error => "invalid_json", message => "Could not parse tariffs_latest.json" });
   }
@@ -77,32 +77,22 @@ sub hour_start_from {
   return sprintf('%04d-%02d-%02dT%02d:00:00%s', $Y,$M,$D,$h,$off);
 }
 
-# Prefer E+G+R; else I (+R) to avoid double counting
-sub kwh_total_for_block {
-  my ($b) = @_;
-  my $e_kwh = get_unit_value($b->{electricity},    'CHF_kWh');
-  my $g_kwh = get_unit_value($b->{grid},           'CHF_kWh');
-  my $r_kwh = get_unit_value($b->{regional_fees},  'CHF_kWh');
-  if ($e_kwh || $g_kwh) {
-    return $e_kwh + $g_kwh + $r_kwh;
-  } else {
-    my $i_kwh = get_unit_value($b->{integrated}, 'CHF_kWh');
-    return $i_kwh + $r_kwh;
+# Parse ISO timestamp with offset into a UTC epoch (seconds since epoch).
+sub _iso_to_epoch {
+  my ($iso) = @_;
+  return undef unless defined $iso;
+  if ($iso =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(Z|([+\-])(\d{2}):(\d{2}))?$/) {
+    my ($Y,$M,$D,$h,$m,$s,$z, $sign, $oh, $om) = ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10);
+    $Y += 0; $M += 0; $D += 0; $h += 0; $m += 0; $s += 0;
+    my $utc_epoch = timegm($s, $m, $h, $D, $M-1, $Y-1900);
+    my $offset_secs = 0;
+    if (defined $z && $z ne 'Z' && defined $sign && defined $oh) {
+      $offset_secs = ($oh * 3600) + ($om * 60);
+      $offset_secs *= ($sign eq '+') ? 1 : -1;
+    }
+    return $utc_epoch - $offset_secs;
   }
-}
-
-# Prefer integrated CHF_M + regional CHF_M; else E+G+R CHF_M
-sub monthly_M_total_for_block {
-  my ($b) = @_;
-  my $i_m = get_unit_value($b->{integrated},     'CHF_M');
-  my $r_m = get_unit_value($b->{regional_fees},  'CHF_M');
-  if ($i_m) {
-    return $i_m + $r_m;
-  } else {
-    my $e_m = get_unit_value($b->{electricity},  'CHF_M');
-    my $g_m = get_unit_value($b->{grid},         'CHF_M');
-    return $e_m + $g_m + $r_m;
-  }
+  return undef;
 }
 
 # MQTT publish: prefer Net::MQTT::Simple when possible; otherwise use mosquitto_pub
@@ -166,7 +156,10 @@ my @sorted = sort {
   ($a->{start_timestamp} // '') cmp ($b->{start_timestamp} // '')
 } grep { ref $_ eq 'HASH' && $_->{start_timestamp} } @$rows;
 
-my @intervals;
+# --------------------------
+# Build raw intervals and hourly aggregates
+# --------------------------
+my @intervals_raw;
 my %hour_groups;
 
 for my $b (@sorted) {
@@ -183,7 +176,7 @@ for my $b (@sorted) {
 
   my $hour_key = hour_start_from($start);
 
-  push @intervals, {
+  push @intervals_raw, {
     start_timestamp  => $start,
     end_timestamp    => $end,
     chf_per_kwh_sum  => $kwh_total,
@@ -199,11 +192,11 @@ for my $b (@sorted) {
   $hour_groups{$hour_key}{total_sum} += $sum_total;
 }
 
-my @hourly;
+my @hourly_raw;
 for my $hk (sort keys %hour_groups) {
   my $g = $hour_groups{$hk};
   my $n = $g->{n} || 1;
-  push @hourly, {
+  push @hourly_raw, {
     hour_start          => $hk,
     avg_total_chf       => $g->{total_sum} / $n,
     avg_chf_per_kwh_sum => $g->{kwh_sum}   / $n,
@@ -214,72 +207,175 @@ for my $hk (sort keys %hour_groups) {
 
 my $pub_ts = $doc->{publication_timestamp} // '';
 
+# --------------------------
+# Forward-fill absolute outputs (never-null) for MQTT
+# - hourly_filled: 24 entries (local hours)
+# - intervals_filled: 96 entries (local 15m)
+# --------------------------
+
+# Build epoch maps from RAW arrays
+my %hour_epoch_map_ff;
+for my $h (@hourly_raw) {
+  next unless ref $h eq 'HASH' && defined $h->{hour_start};
+  my $e = _iso_to_epoch($h->{hour_start});
+  next unless defined $e;
+  $hour_epoch_map_ff{ int($e/3600)*3600 } = $h unless exists $hour_epoch_map_ff{ int($e/3600)*3600 };
+}
+my @hour_epochs_sorted_ff = sort { $a <=> $b } keys %hour_epoch_map_ff;
+
+my %q_epoch_map_ff;
+for my $it (@intervals_raw) {
+  next unless ref $it eq 'HASH' && defined $it->{start_timestamp};
+  my $e = _iso_to_epoch($it->{start_timestamp});
+  next unless defined $e;
+  $q_epoch_map_ff{ int($e/900)*900 } = $it unless exists $q_epoch_map_ff{ int($e/900)*900 };
+}
+my @q_epochs_sorted_ff = sort { $a <=> $b } keys %q_epoch_map_ff;
+
+sub _latest_hour_before_or_at {
+  my ($epoch) = @_;
+  return undef unless defined $epoch;
+  return $hour_epoch_map_ff{ $hour_epochs_sorted_ff[-1] } if @hour_epochs_sorted_ff && $epoch >= $hour_epochs_sorted_ff[-1];
+  for (my $i = $#hour_epochs_sorted_ff; $i >= 0; $i--) {
+    my $e = $hour_epochs_sorted_ff[$i];
+    return $hour_epoch_map_ff{$e} if $e <= $epoch;
+  }
+  return @hour_epochs_sorted_ff ? $hour_epoch_map_ff{ $hour_epochs_sorted_ff[0] } : undef;
+}
+
+sub _latest_q_before_or_at {
+  my ($epoch) = @_;
+  return undef unless defined $epoch;
+  return $q_epoch_map_ff{ $q_epochs_sorted_ff[-1] } if @q_epochs_sorted_ff && $epoch >= $q_epochs_sorted_ff[-1];
+  for (my $i = $#q_epochs_sorted_ff; $i >= 0; $i--) {
+    my $e = $q_epochs_sorted_ff[$i];
+    return $q_epoch_map_ff{$e} if $e <= $epoch;
+  }
+  return @q_epochs_sorted_ff ? $q_epoch_map_ff{ $q_epochs_sorted_ff[0] } : undef;
+}
+
+# Local midnight for "today"
+my @lt_now = localtime(time);
+my $midnight_local_epoch = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
+
+# Helpers to build local ISO with timezone offset
+sub _local_hour_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:00:00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
+sub _local_q_iso   { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:%M:00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
+sub _local_q_end_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:%M:00', localtime($t+900)); my $z=strftime('%z', localtime($t+900)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
+
+# Build filled hourly (24) and intervals (96) arrays for MQTT
+my @hourly_filled;
+for my $h_off (0..23) {
+  my $t  = $midnight_local_epoch + $h_off * 3600;
+  my $is = _local_hour_iso($t);
+  my $ke = _iso_to_epoch($is);
+  my $k  = defined $ke ? int($ke/3600)*3600 : undef;
+
+  my $src = (defined $k && exists $hour_epoch_map_ff{$k}) ? $hour_epoch_map_ff{$k} : _latest_hour_before_or_at($ke);
+  my $avg_total = (defined $src && defined $src->{avg_total_chf}) ? 0 + $src->{avg_total_chf} : 0;
+  my $avg_kwh   = (defined $src && defined $src->{avg_chf_per_kwh_sum}) ? 0 + $src->{avg_chf_per_kwh_sum} : 0;
+  my $avg_m     = (defined $src && defined $src->{avg_chf_m_per_hour}) ? 0 + $src->{avg_chf_m_per_hour} : 0;
+  my $n_int     = (defined $src && defined $src->{intervals_count}) ? 0 + $src->{intervals_count} : 0;
+
+  push @hourly_filled, {
+    hour_start          => $is,        # local hour with offset
+    avg_total_chf       => $avg_total, # never null
+    avg_chf_per_kwh_sum => $avg_kwh,
+    avg_chf_m_per_hour  => $avg_m,
+    intervals_count     => $n_int,
+  };
+}
+
+my @intervals_filled;
+for my $q_off (0..95) {
+  my $t  = $midnight_local_epoch + $q_off * 900;
+  my $is = _local_q_iso($t);
+  my $ie = _local_q_end_iso($t);
+  my $ke = _iso_to_epoch($is);
+  my $k  = defined $ke ? int($ke/900)*900 : undef;
+
+  my $src = (defined $k && exists $q_epoch_map_ff{$k}) ? $q_epoch_map_ff{$k} : _latest_q_before_or_at($ke);
+
+  my $tot      = (defined $src && defined $src->{total_chf}) ? 0 + $src->{total_chf} : 0;
+  my $sum_kwh  = (defined $src && defined $src->{chf_per_kwh_sum}) ? 0 + $src->{chf_per_kwh_sum} : 0;
+  my $m_per_h  = (defined $src && defined $src->{chf_m_per_hour}) ? 0 + $src->{chf_m_per_hour} : 0;
+  my $mh_used  = (defined $src && defined $src->{month_hours_used}) ? 0 + $src->{month_hours_used} : 0;
+
+  push @intervals_filled, {
+    start_timestamp  => $is,    # local 15m start with offset
+    end_timestamp    => $ie,    # local 15m end with offset
+    chf_per_kwh_sum  => $sum_kwh,
+    chf_m_per_hour   => $m_per_h,
+    total_chf        => $tot,   # never null
+    month_hours_used => $mh_used,
+  };
+}
+
+# --------------------------
+# Build MQTT messages from filled arrays (topics unchanged)
+# --------------------------
 my $intervals_msg = {
   publication_timestamp => $pub_ts,
-  interval_count        => scalar(@intervals),
-  intervals             => \@intervals,
+  interval_count        => scalar(@intervals_filled),
+  intervals             => \@intervals_filled,
 };
 my $hourly_msg = {
   publication_timestamp => $pub_ts,
-  hour_count            => scalar(@hourly),
-  hourly                => \@hourly,
+  hour_count            => scalar(@hourly_filled),
+  hourly                => \@hourly_filled,
 };
 
 my $json_intervals = JSON::PP->new->canonical(1)->encode($intervals_msg);
 my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
 
 # --------------------------
-# Relative 24-hour view (now +0 .. now +23) — local-hour aligned matching
+# Relative 24-hour view — local-hour aligned + carry-forward
 # --------------------------
+# Reuse the same maps built above for carry-forward.
 
-# Parse ISO timestamp with offset into a UTC epoch (seconds since epoch).
-sub _iso_to_epoch {
-  my ($iso) = @_;
-  return undef unless defined $iso;
-  if ($iso =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(Z|([+\-])(\d{2}):(\d{2}))?$/) {
-    my ($Y,$M,$D,$h,$m,$s,$z, $sign, $oh, $om) = ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10);
-    $Y += 0; $M += 0; $D += 0; $h += 0; $m += 0; $s += 0;
-    my $utc_epoch = timegm($s, $m, $h, $D, $M-1, $Y-1900);
-    my $offset_secs = 0;
-    if (defined $z && $z ne 'Z' && defined $sign && defined $oh) {
-      $offset_secs = ($oh * 3600) + ($om * 60);
-      $offset_secs *= ($sign eq '+') ? 1 : -1;
+my %hour_epoch_map_rel = %hour_epoch_map_ff;
+my @hour_epochs_sorted_rel = @hour_epochs_sorted_ff;
+
+sub _latest_value_before_or_at_rel {
+  my ($epoch) = @_;
+  return (undef, undef) unless defined $epoch;
+  return (0 + ($hour_epoch_map_rel{$hour_epochs_sorted_rel[-1]}{avg_total_chf} // 0),
+          $hour_epoch_map_rel{$hour_epochs_sorted_rel[-1]}{hour_start})
+    if @hour_epochs_sorted_rel && $epoch >= $hour_epochs_sorted_rel[-1];
+  for (my $i = $#hour_epochs_sorted_rel; $i >= 0; $i--) {
+    my $e = $hour_epochs_sorted_rel[$i];
+    if ($e <= $epoch) {
+      my $h = $hour_epoch_map_rel{$e};
+      my $v = defined $h->{avg_total_chf} ? 0 + $h->{avg_total_chf} : 0;
+      return ($v, $h->{hour_start});
     }
-    return $utc_epoch - $offset_secs;
   }
-  return undef;
+  return (undef, undef);
 }
 
-# Build epoch -> hourly entry map (hour-start epoch)
-my %hour_epoch_map;
-for my $h (@hourly) {
-  next unless ref $h eq 'HASH' && defined $h->{hour_start};
-  my $iso = $h->{hour_start};
-  my $e = _iso_to_epoch($iso);
-  next unless defined $e;
-  my $hour_epoch = int($e / 3600) * 3600;
-  $hour_epoch_map{$hour_epoch} = $h unless exists $hour_epoch_map{$hour_epoch};
-}
-
-# Local-hour aligned relative window: use localtime for each offset and convert to epoch via _iso_to_epoch
 my @relative;
 for my $off (0..23) {
   my $t = time + $off * 3600;
 
-  # Build local ISO for this hour (+ offset like +01:00 or +02:00)
+  # Local ISO for this hour (+ offset like +01:00 or +02:00)
   my $hs_local = strftime('%Y-%m-%dT%H:00:00', localtime($t));
   my $offstr = strftime('%z', localtime($t)); $offstr =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
   my $hs_iso_local = $hs_local . $offstr;
 
-  # Convert that local hour ISO to UTC epoch and look up the hourly value
   my $target_epoch = _iso_to_epoch($hs_iso_local);
-  my $entry = (defined $target_epoch) ? $hour_epoch_map{ int($target_epoch/3600)*3600 } : undef;
+  my $k = defined $target_epoch ? int($target_epoch/3600)*3600 : undef;
 
-  my $val = (defined $entry && defined $entry->{avg_total_chf}) ? ($entry->{avg_total_chf} + 0) : undef;
+  my $val;
+  if (defined $k && exists $hour_epoch_map_rel{$k} && defined $hour_epoch_map_rel{$k}{avg_total_chf}) {
+    $val = 0 + $hour_epoch_map_rel{$k}{avg_total_chf};
+  } else {
+    my ($v_prev, undef) = _latest_value_before_or_at_rel($target_epoch);
+    $val = 0 + ($v_prev // 0);  # never null
+  }
 
   push @relative, {
     offset        => $off,
-    hour_start    => $hs_iso_local,   # always emit local hour with offset
+    hour_start    => $hs_iso_local,   # local hour with offset
     avg_total_chf => $val,
   };
 }
@@ -289,10 +385,11 @@ my $relative_msg = {
   reference_time        => strftime('%Y-%m-%dT%H:%M:%S', localtime(time)),
   relative              => \@relative,
 };
-
 my $json_relative = JSON::PP->new->canonical(1)->encode($relative_msg);
 
-# Topics (new dedicated, with backward-compatible fallback)
+# --------------------------
+# MQTT publish (topics unchanged)
+# --------------------------
 my $topic_intervals = $cfg->{mqtt_topic_intervals}
                    // $cfg->{mqtt_topic_raw}
                    // 'ekz/ems/tariffs/intervals';
@@ -310,7 +407,7 @@ if (!$nopublish) {
 }
 
 # --------------------------
-# InfluxDB helpers (ADDED)
+# InfluxDB helpers
 # --------------------------
 sub _escape_tag {
   my ($v) = @_;
@@ -352,7 +449,6 @@ sub influx_write_lines {
     my $org    = $cfg->{influx_org}    // '';
     my $bucket = $cfg->{influx_bucket} // '';
     my $token  = $cfg->{influx_token}  // '';
-    # FAIL-SOFT: missing config => skip writes (return 0), but DO NOT die
     unless ($base && $org && $bucket && $token) {
       eval { LOGERR("Influx v2 missing config: url/org/bucket/token required"); 1; };
       return 0;
@@ -360,7 +456,6 @@ sub influx_write_lines {
     $url = "$base/api/v2/write?org=$org&bucket=$bucket&precision=" . ($precision // 'ns');
     $headers{'Authorization'} = "Token $token";
   } else {
-    # v1: simple query auth
     my $db   = $cfg->{influx_db} // '';
     unless ($base && $db) {
       eval { LOGERR("Influx v1 missing config: url/db required"); 1; };
@@ -383,7 +478,7 @@ sub influx_write_lines {
 }
 
 # --------------------------
-# Build Influx payload and write
+# Build Influx payload from RAW arrays and write
 # --------------------------
 my $influx_ok = 1;
 if ($cfg->{influx_enabled}) {
@@ -391,8 +486,8 @@ if ($cfg->{influx_enabled}) {
   my $source = $doc->{source} // 'unknown';
   my $ems    = $cfg->{ems_instance_id} // '';
 
-  # Intervals
-  for my $it (@intervals) {
+  # Intervals (RAW, not forward-filled)
+  for my $it (@intervals_raw) {
     my $t = _iso_to_epoch($it->{start_timestamp}); next unless defined $t;
     my %tags = ( source => $source, ems => $ems );
     my %fields = (
@@ -404,8 +499,8 @@ if ($cfg->{influx_enabled}) {
     push @influx_lines, _line('ekz_tariff_intervals', \%tags, \%fields, $t);
   }
 
-  # Hourly
-  for my $h (@hourly) {
+  # Hourly (RAW, not forward-filled)
+  for my $h (@hourly_raw) {
     next unless ref $h eq 'HASH' && defined $h->{hour_start};
     my $t = _iso_to_epoch($h->{hour_start}); next unless defined $t;
     my %tags = ( source => $source, ems => $ems );
@@ -418,18 +513,20 @@ if ($cfg->{influx_enabled}) {
     push @influx_lines, _line('ekz_tariff_hourly', \%tags, \%fields, $t);
   }
 
-  # If config missing or write fails, influx_ok becomes false but JSON still returns
   $influx_ok = influx_write_lines($cfg, \@influx_lines, 'ns');
 }
 
+# --------------------------
+# Final output (debug/info)
+# --------------------------
 my $out = {
   source_file             => $src_path,
   publication_timestamp   => $pub_ts,
   interval_count_input    => scalar(@sorted),
-  interval_count_output   => scalar(@intervals),
-  hour_count_output       => scalar(@hourly),
-  intervals               => \@intervals,
-  hourly                  => \@hourly,
+  interval_count_output   => scalar(@intervals_filled),
+  hour_count_output       => scalar(@hourly_filled),
+  intervals               => \@intervals_filled, # filled view mirrors what MQTT publishes
+  hourly                  => \@hourly_filled,    # filled view mirrors what MQTT publishes
   mqtt => {
     enabled                  => !!($cfg->{mqtt_enabled}),
     intervals_topic          => $topic_intervals,
