@@ -77,6 +77,36 @@ sub hour_start_from {
   return sprintf('%04d-%02d-%02dT%02d:00:00%s', $Y,$M,$D,$h,$off);
 }
 
+# Prefer E+G+R; else I (+R) to avoid double counting
+sub kwh_total_for_block {
+  my ($b) = @_;
+  return 0 unless ref($b) eq 'HASH';
+  my $e_kwh = get_unit_value($b->{electricity},    'CHF_kWh');
+  my $g_kwh = get_unit_value($b->{grid},           'CHF_kWh');
+  my $r_kwh = get_unit_value($b->{regional_fees},  'CHF_kWh');
+  if ($e_kwh || $g_kwh) {
+    return $e_kwh + $g_kwh + $r_kwh;
+  } else {
+    my $i_kwh = get_unit_value($b->{integrated}, 'CHF_kWh');
+    return $i_kwh + $r_kwh;
+  }
+}
+
+# Prefer integrated CHF_M + regional CHF_M; else E+G+R CHF_M
+sub monthly_M_total_for_block {
+  my ($b) = @_;
+  return 0 unless ref($b) eq 'HASH';
+  my $i_m = get_unit_value($b->{integrated},     'CHF_M');
+  my $r_m = get_unit_value($b->{regional_fees},  'CHF_M');
+  if ($i_m) {
+    return $i_m + $r_m;
+  } else {
+    my $e_m = get_unit_value($b->{electricity},  'CHF_M');
+    my $g_m = get_unit_value($b->{grid},         'CHF_M');
+    return $e_m + $g_m + $r_m;
+  }
+}
+
 # Parse ISO timestamp with offset into a UTC epoch (seconds since epoch).
 sub _iso_to_epoch {
   my ($iso) = @_;
