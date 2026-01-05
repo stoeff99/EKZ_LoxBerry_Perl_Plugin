@@ -206,6 +206,13 @@ sub _randhex {
   return $out;
 }
 
+sub same_calendar_day {
+  my ($epoch1, $epoch2) = @_;
+  my @t1 = localtime($epoch1);
+  my @t2 = localtime($epoch2);
+  return ($t1[3] == $t2[3] && $t1[4] == $t2[4] && $t1[5] == $t2[5]);
+}
+
 # --------------------------
 # Tokens storage helpers
 # --------------------------

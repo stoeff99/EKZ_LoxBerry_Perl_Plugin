@@ -271,6 +271,56 @@ sub save_raw_payload {
 }
 
 # --------------------------
+# Ring buffer storage for fetch records
+# --------------------------
+sub save_fetch_record {
+  my ($record) = @_;
+  
+  # Wrap entire operation in eval to ensure it never breaks the main fetch
+  eval {
+    # Create fetch_records directory if it doesn't exist
+    my $records_dir = File::Spec->catdir($lbpdatadir, 'fetch_records');
+    unless (-d $records_dir) {
+      _ensure_dir($records_dir);
+      chmod 0750, $records_dir;
+    }
+    
+    # Rotate existing files: 09→delete, 08→09, ..., 01→02, 00→01
+    # Start from the oldest (09) and work backwards
+    my $oldest_file = File::Spec->catfile($records_dir, 'fetch_record_09.json');
+    unlink $oldest_file if -f $oldest_file;
+    
+    # Rotate files 08→09, 07→08, ..., 00→01
+    for (my $i = 8; $i >= 0; $i--) {
+      my $old_num = sprintf('%02d', $i);
+      my $new_num = sprintf('%02d', $i + 1);
+      my $old_path = File::Spec->catfile($records_dir, "fetch_record_${old_num}.json");
+      my $new_path = File::Spec->catfile($records_dir, "fetch_record_${new_num}.json");
+      
+      if (-f $old_path) {
+        rename $old_path, $new_path;
+      }
+    }
+    
+    # Write the new record as fetch_record_00.json
+    my $new_record_path = File::Spec->catfile($records_dir, 'fetch_record_00.json');
+    if (open my $fh, '>', $new_record_path) {
+      print $fh JSON::PP->new->pretty(1)->encode($record);
+      close $fh;
+      chmod 0640, $new_record_path;
+      LOGINF("Saved fetch record to ring buffer: fetch_record_00.json");
+    } else {
+      LOGWARN("Failed to write fetch record to ring buffer: $!");
+    }
+    
+    1;
+  } or do {
+    my $err = $@ // 'unknown error';
+    LOGWARN("Ring buffer operation failed (non-fatal): $err");
+  };
+}
+
+# --------------------------
 # Main
 # --------------------------
 my $ok = eval {
@@ -413,6 +463,11 @@ my $ok = eval {
   # Fetch window and potentially apply fallback
   my $access = ensure_access_token($cfg);
   my ($payload, $source) = fetch_window($cfg, $access, $start_iso, $end_iso);
+  
+  # Track metadata for ring buffer
+  my $initial_source = $source // 'unknown';
+  my $fallback_applied = 0;
+  my $window_kind = $want_today ? 'today' : 'nextday';
 
   # Next-day fallback to public tariffs if integrated CHF_kWh mostly zero after 18:00
   my $is_nextday = !$want_today;
@@ -449,6 +504,7 @@ my $ok = eval {
 
         $payload = $pub_payload;
         $source  = 'public';
+        $fallback_applied = 1;
         LOGINF("Applied public fallback tariffs and folded regional fee (%.4f CHF/kWh) into integrated%s.",
           $fee_kwh, ($zero_reg ? " (regional CHF_kWh zeroed)" : ""));
         save_raw_payload($cfg, $rid, 'raw_public_fallback', $payload);
@@ -541,6 +597,39 @@ my $ok = eval {
   };
   print JSON::PP->new->pretty(1)->encode($out);
   log_event($cfg, $rid, 'done', { intervals => scalar(@$prices), final_source => $norm->{source} });
+
+  # Save fetch record to ring buffer
+  my $rows_for_check = $payload->{rows} // $payload->{prices} // [];
+  my $intervals_count = ref($rows_for_check) eq 'ARRAY' ? scalar(@$rows_for_check) : 0;
+  my $integrated_share = $intervals_count > 0 ? integrated_nonzero_share($rows_for_check) : 0;
+  
+  my $fetch_record = {
+    timestamp    => _iso_now(),
+    request_id   => $rid,
+    fetch_metadata => {
+      schedule       => $schedule,
+      force          => ($force ? JSON::PP::true : JSON::PP::false),
+      param_today    => (($q->param('today') // '') eq '1' ? JSON::PP::true : JSON::PP::false),
+      grace_minutes  => $grace,
+    },
+    window => {
+      kind => $window_kind,
+      from => $start_iso,
+      to   => $end_iso,
+    },
+    api_response => {
+      source                   => $initial_source,
+      intervals                => $intervals_count,
+      integrated_nonzero_share => sprintf('%.4f', $integrated_share),
+    },
+    raw_payload        => $payload,
+    normalized_payload => $norm,
+    fallback_applied   => ($fallback_applied ? JSON::PP::true : JSON::PP::false),
+    mqtt_published     => ($mqtt_ok ? JSON::PP::true : JSON::PP::false),
+    compute_completed  => ($compute_ok ? JSON::PP::true : JSON::PP::false),
+  };
+  
+  save_fetch_record($fetch_record);
 
   return 1;
 };
