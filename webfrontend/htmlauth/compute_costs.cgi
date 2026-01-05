@@ -229,8 +229,10 @@ my $json_intervals = JSON::PP->new->canonical(1)->encode($intervals_msg);
 my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
 
 # --------------------------
-# Relative 24-hour view (now +0 .. now +23) — epoch-aligned matching
+# Relative 24-hour view (now +0 .. now +23) — local-hour aligned matching
 # --------------------------
+
+# Parse ISO timestamp with offset into a UTC epoch (seconds since epoch).
 sub _iso_to_epoch {
   my ($iso) = @_;
   return undef unless defined $iso;
@@ -248,6 +250,7 @@ sub _iso_to_epoch {
   return undef;
 }
 
+# Build epoch -> hourly entry map (hour-start epoch)
 my %hour_epoch_map;
 for my $h (@hourly) {
   next unless ref $h eq 'HASH' && defined $h->{hour_start};
@@ -258,24 +261,25 @@ for my $h (@hourly) {
   $hour_epoch_map{$hour_epoch} = $h unless exists $hour_epoch_map{$hour_epoch};
 }
 
+# Local-hour aligned relative window: use localtime for each offset and convert to epoch via _iso_to_epoch
 my @relative;
 for my $off (0..23) {
   my $t = time + $off * 3600;
-  my $target_hour_epoch = int($t / 3600) * 3600;
-  my $entry = $hour_epoch_map{$target_hour_epoch};
-  my ($hs, $val);
-  if ($entry) {
-    $hs  = $entry->{hour_start};
-    $val = defined $entry->{avg_total_chf} ? ($entry->{avg_total_chf} + 0) : undef;
-  } else {
-    my $hs_local = strftime('%Y-%m-%dT%H:00:00', localtime($t));
-    my $offstr = strftime('%z', localtime($t)); $offstr =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
-    $hs = $hs_local . $offstr;
-    $val = undef;
-  }
+
+  # Build local ISO for this hour (+ offset like +01:00 or +02:00)
+  my $hs_local = strftime('%Y-%m-%dT%H:00:00', localtime($t));
+  my $offstr = strftime('%z', localtime($t)); $offstr =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
+  my $hs_iso_local = $hs_local . $offstr;
+
+  # Convert that local hour ISO to UTC epoch and look up the hourly value
+  my $target_epoch = _iso_to_epoch($hs_iso_local);
+  my $entry = (defined $target_epoch) ? $hour_epoch_map{ int($target_epoch/3600)*3600 } : undef;
+
+  my $val = (defined $entry && defined $entry->{avg_total_chf}) ? ($entry->{avg_total_chf} + 0) : undef;
+
   push @relative, {
-    offset => $off,
-    hour_start => $hs,
+    offset        => $off,
+    hour_start    => $hs_iso_local,   # always emit local hour with offset
     avg_total_chf => $val,
   };
 }
@@ -285,6 +289,7 @@ my $relative_msg = {
   reference_time        => strftime('%Y-%m-%dT%H:%M:%S', localtime(time)),
   relative              => \@relative,
 };
+
 my $json_relative = JSON::PP->new->canonical(1)->encode($relative_msg);
 
 # Topics (new dedicated, with backward-compatible fallback)
