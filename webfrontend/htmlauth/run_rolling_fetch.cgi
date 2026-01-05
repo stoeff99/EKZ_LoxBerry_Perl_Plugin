@@ -593,7 +593,7 @@ my $ok = eval {
     prices                => $prices,
     rows                  => $prices,
     interval_count        => scalar(@$prices),
-    request_id            => sprintf('%d-%d', time, $$),
+    request_id            => $rid,
   };
   print JSON::PP->new->pretty(1)->encode($out);
   log_event($cfg, $rid, 'done', { intervals => scalar(@$prices), final_source => $norm->{source} });
