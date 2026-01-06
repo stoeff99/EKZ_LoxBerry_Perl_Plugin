@@ -268,14 +268,12 @@ my $midnight_local_epoch = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]
 
 # Detect midnight transition: today's midnight is after all available data
 # This happens between 00:00 and ~19:00 when building today's view but only having yesterday's data
-my $in_midnight_transition = 0;
+# Log this condition for troubleshooting
 if (@hour_epochs_sorted_ff == 0) {
   # No data at all
-  $in_midnight_transition = 1;
   eval { LOGWARN("Midnight transition: No hourly data available in tariffs_latest.json"); 1; };
 } elsif ($midnight_local_epoch > $hour_epochs_sorted_ff[-1]) {
   # Today's midnight is after the last available data timestamp
-  $in_midnight_transition = 1;
   my $last_data_time = strftime('%Y-%m-%d %H:%M:%S', localtime($hour_epochs_sorted_ff[-1]));
   my $today_midnight = strftime('%Y-%m-%d %H:%M:%S', localtime($midnight_local_epoch));
   eval { 
