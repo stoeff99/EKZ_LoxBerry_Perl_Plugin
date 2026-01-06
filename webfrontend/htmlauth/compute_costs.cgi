@@ -262,31 +262,75 @@ for my $it (@intervals_raw) {
 }
 my @q_epochs_sorted_ff = sort { $a <=> $b } keys %q_epoch_map_ff;
 
+# Local midnight for "today"
+my @lt_now = localtime(time);
+my $midnight_local_epoch = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
+
+# Detect midnight transition: today's midnight is after all available data
+# This happens between 00:00 and ~19:00 when building today's view but only having yesterday's data
+my $in_midnight_transition = 0;
+if (@hour_epochs_sorted_ff == 0) {
+  # No data at all
+  $in_midnight_transition = 1;
+  eval { LOGWARN("Midnight transition: No hourly data available in tariffs_latest.json"); 1; };
+} elsif ($midnight_local_epoch > $hour_epochs_sorted_ff[-1]) {
+  # Today's midnight is after the last available data timestamp
+  $in_midnight_transition = 1;
+  my $last_data_time = strftime('%Y-%m-%d %H:%M:%S', localtime($hour_epochs_sorted_ff[-1]));
+  my $today_midnight = strftime('%Y-%m-%d %H:%M:%S', localtime($midnight_local_epoch));
+  eval { 
+    LOGINF("Midnight transition detected: Building view for $today_midnight but last data is from $last_data_time. Using last available values as carry-forward."); 
+    1; 
+  };
+}
+
 sub _latest_hour_before_or_at {
   my ($epoch) = @_;
   return undef unless defined $epoch;
-  return $hour_epoch_map_ff{ $hour_epochs_sorted_ff[-1] } if @hour_epochs_sorted_ff && $epoch >= $hour_epochs_sorted_ff[-1];
+  
+  # If no data available, return undef
+  return undef unless @hour_epochs_sorted_ff;
+  
+  # If requested epoch is at or after the last available data, return the last available
+  # This handles the midnight transition case where we're building today's view with yesterday's data
+  if ($epoch >= $hour_epochs_sorted_ff[-1]) {
+    return $hour_epoch_map_ff{ $hour_epochs_sorted_ff[-1] };
+  }
+  
+  # Find the latest data point before or at the requested epoch
   for (my $i = $#hour_epochs_sorted_ff; $i >= 0; $i--) {
     my $e = $hour_epochs_sorted_ff[$i];
     return $hour_epoch_map_ff{$e} if $e <= $epoch;
   }
-  return @hour_epochs_sorted_ff ? $hour_epoch_map_ff{ $hour_epochs_sorted_ff[0] } : undef;
+  
+  # If requested epoch is before all available data, return the first available
+  # (This shouldn't normally happen, but provides a fallback)
+  return $hour_epoch_map_ff{ $hour_epochs_sorted_ff[0] };
 }
 
 sub _latest_q_before_or_at {
   my ($epoch) = @_;
   return undef unless defined $epoch;
-  return $q_epoch_map_ff{ $q_epochs_sorted_ff[-1] } if @q_epochs_sorted_ff && $epoch >= $q_epochs_sorted_ff[-1];
+  
+  # If no data available, return undef
+  return undef unless @q_epochs_sorted_ff;
+  
+  # If requested epoch is at or after the last available data, return the last available
+  # This handles the midnight transition case where we're building today's view with yesterday's data
+  if ($epoch >= $q_epochs_sorted_ff[-1]) {
+    return $q_epoch_map_ff{ $q_epochs_sorted_ff[-1] };
+  }
+  
+  # Find the latest data point before or at the requested epoch
   for (my $i = $#q_epochs_sorted_ff; $i >= 0; $i--) {
     my $e = $q_epochs_sorted_ff[$i];
     return $q_epoch_map_ff{$e} if $e <= $epoch;
   }
-  return @q_epochs_sorted_ff ? $q_epoch_map_ff{ $q_epochs_sorted_ff[0] } : undef;
+  
+  # If requested epoch is before all available data, return the first available
+  # (This shouldn't normally happen, but provides a fallback)
+  return $q_epoch_map_ff{ $q_epochs_sorted_ff[0] };
 }
-
-# Local midnight for "today"
-my @lt_now = localtime(time);
-my $midnight_local_epoch = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
 
 # Helpers to build local ISO with timezone offset
 sub _local_hour_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:00:00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
