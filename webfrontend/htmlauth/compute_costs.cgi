@@ -474,7 +474,8 @@ my ($pub_intervals_ok, $pub_hourly_ok) = (0, 0);
 my $pub_relative_ok = 0;
 if (!$nopublish) {
   # Add time check to prevent overwriting today's data with tomorrow's data
-  # Only publish absolute values (intervals/hourly) at 23:59 or after midnight
+  # Only publish absolute values (intervals/hourly) at 23:59 or during hour 0 (00:00-00:59)
+  # This prevents publishing when tomorrow's data is in tariffs_latest.json (18:00-23:58)
   my ($hour, $min) = (localtime(time))[2,1];
   my $allow_absolute_publish = ($hour == 23 && $min >= 59) || ($hour == 0);
   
