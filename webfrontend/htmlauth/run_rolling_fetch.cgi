@@ -398,8 +398,8 @@ my $ok = eval {
     my $today_file = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
     my $tomorrow_file = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
     
-    if (-f $tomorrow_file && !-f $today_file) {
-      # Copy tomorrow to today
+    if (-f $tomorrow_file) {
+      # Copy tomorrow to today (overwrite if exists)
       if (open my $src, '<', $tomorrow_file) {
         local $/ = undef;
         my $content = <$src>;

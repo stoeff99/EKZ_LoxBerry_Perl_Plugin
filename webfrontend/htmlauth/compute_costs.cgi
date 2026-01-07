@@ -48,20 +48,22 @@ sub read_today_and_tomorrow_json {
   
   # Read today's data
   if (-f $today_path) {
-    open my $fh, '<', $today_path or die "Cannot open $today_path: $!";
-    local $/ = undef;
-    my $raw = <$fh>;
-    close $fh;
-    $today_doc = eval { JSON::PP->new->decode($raw) };
+    if (open my $fh, '<', $today_path) {
+      local $/ = undef;
+      my $raw = <$fh>;
+      close $fh;
+      $today_doc = eval { JSON::PP->new->decode($raw) };
+    }
   }
   
   # Read tomorrow's data
   if (-f $tomorrow_path) {
-    open my $fh, '<', $tomorrow_path or die "Cannot open $tomorrow_path: $!";
-    local $/ = undef;
-    my $raw = <$fh>;
-    close $fh;
-    $tomorrow_doc = eval { JSON::PP->new->decode($raw) };
+    if (open my $fh, '<', $tomorrow_path) {
+      local $/ = undef;
+      my $raw = <$fh>;
+      close $fh;
+      $tomorrow_doc = eval { JSON::PP->new->decode($raw) };
+    }
   }
   
   return ($today_doc, $tomorrow_doc);
@@ -432,63 +434,45 @@ my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
 # --------------------------
 my ($today_doc, $tomorrow_doc) = read_today_and_tomorrow_json();
 
+# Helper function to add blocks to hour epoch map
+sub _add_blocks_to_map {
+  my ($doc, $map_ref) = @_;
+  return unless $doc && ref($doc->{rows}) eq 'ARRAY';
+  
+  my $rows = $doc->{rows};
+  for my $b (@$rows) {
+    my $start = $b->{start_timestamp} // next;
+    my $hour_key = hour_start_from($start);
+    my $e = _iso_to_epoch($hour_key);
+    next unless defined $e;
+    my $k = int($e/3600)*3600;
+    
+    unless (exists $map_ref->{$k}) {
+      # Calculate values same as in hourly_raw
+      my ($Y,$M) = (parse_ymdh($start))[0,1];
+      my $hours_in_month = days_in_month($Y,$M) * 24;
+      my $kwh_total = kwh_total_for_block($b);
+      my $monthly_m = monthly_M_total_for_block($b);
+      my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
+      my $sum_total = $kwh_total + $fixed_per_hour;
+      
+      $map_ref->{$k} = {
+        hour_start => $hour_key,
+        avg_total_chf => $sum_total,
+      };
+    }
+  }
+}
+
 # Build combined hour map for relative view
 my %hour_epoch_map_rel;
 my @hour_epochs_sorted_rel;
 
 # Add today's data
-if ($today_doc && ref($today_doc->{rows}) eq 'ARRAY') {
-  my $today_rows = $today_doc->{rows};
-  for my $b (@$today_rows) {
-    my $start = $b->{start_timestamp} // next;
-    my $hour_key = hour_start_from($start);
-    my $e = _iso_to_epoch($hour_key);
-    next unless defined $e;
-    my $k = int($e/3600)*3600;
-    
-    unless (exists $hour_epoch_map_rel{$k}) {
-      # Calculate values same as in hourly_raw
-      my ($Y,$M) = (parse_ymdh($start))[0,1];
-      my $hours_in_month = days_in_month($Y,$M) * 24;
-      my $kwh_total = kwh_total_for_block($b);
-      my $monthly_m = monthly_M_total_for_block($b);
-      my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
-      my $sum_total = $kwh_total + $fixed_per_hour;
-      
-      $hour_epoch_map_rel{$k} = {
-        hour_start => $hour_key,
-        avg_total_chf => $sum_total,
-      };
-    }
-  }
-}
+_add_blocks_to_map($today_doc, \%hour_epoch_map_rel);
 
 # Add tomorrow's data
-if ($tomorrow_doc && ref($tomorrow_doc->{rows}) eq 'ARRAY') {
-  my $tomorrow_rows = $tomorrow_doc->{rows};
-  for my $b (@$tomorrow_rows) {
-    my $start = $b->{start_timestamp} // next;
-    my $hour_key = hour_start_from($start);
-    my $e = _iso_to_epoch($hour_key);
-    next unless defined $e;
-    my $k = int($e/3600)*3600;
-    
-    unless (exists $hour_epoch_map_rel{$k}) {
-      # Calculate values same as in hourly_raw
-      my ($Y,$M) = (parse_ymdh($start))[0,1];
-      my $hours_in_month = days_in_month($Y,$M) * 24;
-      my $kwh_total = kwh_total_for_block($b);
-      my $monthly_m = monthly_M_total_for_block($b);
-      my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
-      my $sum_total = $kwh_total + $fixed_per_hour;
-      
-      $hour_epoch_map_rel{$k} = {
-        hour_start => $hour_key,
-        avg_total_chf => $sum_total,
-      };
-    }
-  }
-}
+_add_blocks_to_map($tomorrow_doc, \%hour_epoch_map_rel);
 
 @hour_epochs_sorted_rel = sort { $a <=> $b } keys %hour_epoch_map_rel;
 
