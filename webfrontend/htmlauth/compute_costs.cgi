@@ -40,6 +40,41 @@ sub read_latest_json {
   return ($path, $doc, undef);
 }
 
+sub read_today_and_tomorrow_json {
+  my $today_path = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
+  my $tomorrow_path = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
+  
+  my ($today_doc, $tomorrow_doc);
+  
+  # Read today's data
+  if (-f $today_path) {
+    if (open my $fh, '<', $today_path) {
+      local $/ = undef;
+      my $raw = <$fh>;
+      close $fh;
+      $today_doc = eval { JSON::PP->new->decode($raw) };
+      eval { LOGWARN("Failed to parse $today_path: $@"); 1; } if $@;
+    } else {
+      eval { LOGWARN("Failed to open $today_path: $!"); 1; };
+    }
+  }
+  
+  # Read tomorrow's data
+  if (-f $tomorrow_path) {
+    if (open my $fh, '<', $tomorrow_path) {
+      local $/ = undef;
+      my $raw = <$fh>;
+      close $fh;
+      $tomorrow_doc = eval { JSON::PP->new->decode($raw) };
+      eval { LOGWARN("Failed to parse $tomorrow_path: $@"); 1; } if $@;
+    } else {
+      eval { LOGWARN("Failed to open $tomorrow_path: $!"); 1; };
+    }
+  }
+  
+  return ($today_doc, $tomorrow_doc);
+}
+
 sub get_unit_value {
   my ($arr, $wanted) = @_;
   return 0 unless $arr && ref($arr) eq 'ARRAY';
@@ -401,12 +436,51 @@ my $json_intervals = JSON::PP->new->canonical(1)->encode($intervals_msg);
 my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
 
 # --------------------------
-# Relative 24-hour view — local-hour aligned + carry-forward
+# Relative 24-hour view — load both today and tomorrow data
 # --------------------------
-# Reuse the same maps built above for carry-forward.
+my ($today_doc, $tomorrow_doc) = read_today_and_tomorrow_json();
 
-my %hour_epoch_map_rel = %hour_epoch_map_ff;
-my @hour_epochs_sorted_rel = @hour_epochs_sorted_ff;
+# Helper function to add blocks to hour epoch map
+sub _add_blocks_to_map {
+  my ($doc, $map_ref) = @_;
+  return unless $doc && ref($doc->{rows}) eq 'ARRAY';
+  
+  my $rows = $doc->{rows};
+  for my $b (@$rows) {
+    my $start = $b->{start_timestamp} // next;
+    my $hour_key = hour_start_from($start);
+    my $e = _iso_to_epoch($hour_key);
+    next unless defined $e;
+    my $k = int($e/3600)*3600;
+    
+    unless (exists $map_ref->{$k}) {
+      # Calculate values same as in hourly_raw
+      my ($Y,$M) = (parse_ymdh($start))[0,1];
+      my $hours_in_month = days_in_month($Y,$M) * 24;
+      my $kwh_total = kwh_total_for_block($b);
+      my $monthly_m = monthly_M_total_for_block($b);
+      my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
+      my $sum_total = $kwh_total + $fixed_per_hour;
+      
+      $map_ref->{$k} = {
+        hour_start => $hour_key,
+        avg_total_chf => $sum_total,
+      };
+    }
+  }
+}
+
+# Build combined hour map for relative view
+my %hour_epoch_map_rel;
+my @hour_epochs_sorted_rel;
+
+# Add today's data
+_add_blocks_to_map($today_doc, \%hour_epoch_map_rel);
+
+# Add tomorrow's data
+_add_blocks_to_map($tomorrow_doc, \%hour_epoch_map_rel);
+
+@hour_epochs_sorted_rel = sort { $a <=> $b } keys %hour_epoch_map_rel;
 
 sub _latest_value_before_or_at_rel {
   my ($epoch) = @_;
