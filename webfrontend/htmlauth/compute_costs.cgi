@@ -53,6 +53,9 @@ sub read_today_and_tomorrow_json {
       my $raw = <$fh>;
       close $fh;
       $today_doc = eval { JSON::PP->new->decode($raw) };
+      warn "Failed to parse $today_path: $@" if $@ && !$today_doc;
+    } else {
+      warn "Failed to open $today_path: $!";
     }
   }
   
@@ -63,6 +66,9 @@ sub read_today_and_tomorrow_json {
       my $raw = <$fh>;
       close $fh;
       $tomorrow_doc = eval { JSON::PP->new->decode($raw) };
+      warn "Failed to parse $tomorrow_path: $@" if $@ && !$tomorrow_doc;
+    } else {
+      warn "Failed to open $tomorrow_path: $!";
     }
   }
   

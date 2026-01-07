@@ -409,9 +409,13 @@ my $ok = eval {
           close $dst;
           chmod 0640, $today_file;
           LOGINF("Rotated tariffs_tomorrow.json -> tariffs_today.json at midnight");
+        } else {
+          LOGWARN("Failed to write to $today_file during rotation: $!");
         }
+      } else {
+        LOGWARN("Failed to read $tomorrow_file during rotation: $!");
       }
-      unlink $tomorrow_file;
+      unlink $tomorrow_file or LOGWARN("Failed to delete $tomorrow_file after rotation: $!");
     }
   }
 
