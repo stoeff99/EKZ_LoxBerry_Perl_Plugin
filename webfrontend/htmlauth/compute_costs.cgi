@@ -473,8 +473,16 @@ my $topic_relative  = $cfg->{mqtt_topic_relative} // 'ekz/ems/tariffs/relative';
 my ($pub_intervals_ok, $pub_hourly_ok) = (0, 0);
 my $pub_relative_ok = 0;
 if (!$nopublish) {
-  $pub_intervals_ok = mqtt_publish($cfg, $topic_intervals, $json_intervals) ? 1 : 0;
-  $pub_hourly_ok    = mqtt_publish($cfg, $topic_hourly,    $json_hourly)    ? 1 : 0;
+  # Add time check to prevent overwriting today's data with tomorrow's data
+  # Only publish absolute values (intervals/hourly) at 23:59 or after midnight
+  my ($hour, $min) = (localtime(time))[2,1];
+  my $allow_absolute_publish = ($hour == 23 && $min >= 59) || ($hour == 0);
+  
+  if ($allow_absolute_publish) {
+    $pub_intervals_ok = mqtt_publish($cfg, $topic_intervals, $json_intervals) ? 1 : 0;
+    $pub_hourly_ok    = mqtt_publish($cfg, $topic_hourly,    $json_hourly)    ? 1 : 0;
+  }
+  # Relative can always be published for rolling 24h view
   $pub_relative_ok  = mqtt_publish($cfg, $topic_relative,  $json_relative)  ? 1 : 0;
 }
 
