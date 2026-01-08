@@ -393,7 +393,6 @@ sub fetch_window {
     $payload = _normalize_payload($payload);
     if ($payload->{rows} && ref($payload->{rows}) eq 'ARRAY' && @{ $payload->{rows} }) {
       $log->("customerTariffs: returned " . scalar(@{$payload->{rows}}) . " rows");
-      eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'customer', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
       return ($payload, 'customer');
     }
     $log->("customerTariffs returned empty rows (count=" . ($payload->{interval_count}//0) . "), falling back to public tariffs");
@@ -422,7 +421,6 @@ sub fetch_window {
       $pub_payload = _normalize_payload($pub_payload);
       if ($pub_payload->{rows} && ref($pub_payload->{rows}) eq 'ARRAY' && @{ $pub_payload->{rows} }) {
         $log->("public /tariffs (tariff_name=$tariff_name): returned " . scalar(@{$pub_payload->{rows}}) . " rows");
-        eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
         return ($pub_payload, 'public');
       }
       $log->("public /tariffs (tariff_name=$tariff_name) returned empty rows (count=" . ($pub_payload->{interval_count}//0) . ")");
@@ -445,7 +443,6 @@ sub fetch_window {
     $pub_payload = _normalize_payload($pub_payload);
     if ($pub_payload->{rows} && ref($pub_payload->{rows}) eq 'ARRAY' && @{ $pub_payload->{rows} }) {
       $log->("public /tariffs (no tariff_name): returned " . scalar(@{$pub_payload->{rows}}) . " rows");
-      eval { publish_mqtt($cfg, $cfg->{mqtt_topic_summary}, { source => 'public', from => $start_iso, to => $end_iso }); 1 } or warn "MQTT publish failed";
       return ($pub_payload, 'public');
     }
     $log->("public /tariffs (no tariff_name) returned empty rows (count=" . ($pub_payload->{interval_count}//0) . ")");
