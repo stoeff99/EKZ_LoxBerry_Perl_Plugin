@@ -478,9 +478,9 @@ sub _add_blocks_to_map {
   # Calculate averages after accumulating all intervals
   for my $k (keys %$map_ref) {
     my $entry = $map_ref->{$k};
-    my $n = $entry->{n} || 1;
+    my $n = $entry->{n} || 1;  # Fallback to 1 matches main aggregation logic (line 263)
     $entry->{avg_total_chf} = $entry->{total_sum} / $n;
-    # Clean up intermediate accumulation fields
+    # Clean up intermediate accumulation fields (not needed in final output)
     delete $entry->{n};
     delete $entry->{total_sum};
   }
