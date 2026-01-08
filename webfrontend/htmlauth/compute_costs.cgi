@@ -441,6 +441,7 @@ my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
 my ($today_doc, $tomorrow_doc) = read_today_and_tomorrow_json();
 
 # Helper function to add blocks to hour epoch map
+# Accumulates all 15-minute intervals per hour, then calculates averages
 sub _add_blocks_to_map {
   my ($doc, $map_ref) = @_;
   return unless $doc && ref($doc->{rows}) eq 'ARRAY';
@@ -453,20 +454,35 @@ sub _add_blocks_to_map {
     next unless defined $e;
     my $k = int($e/3600)*3600;
     
+    # Initialize accumulator if not exists
     unless (exists $map_ref->{$k}) {
-      # Calculate values same as in hourly_raw
-      my ($Y,$M) = (parse_ymdh($start))[0,1];
-      my $hours_in_month = days_in_month($Y,$M) * 24;
-      my $kwh_total = kwh_total_for_block($b);
-      my $monthly_m = monthly_M_total_for_block($b);
-      my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
-      my $sum_total = $kwh_total + $fixed_per_hour;
-      
       $map_ref->{$k} = {
         hour_start => $hour_key,
-        avg_total_chf => $sum_total,
+        n => 0,
+        total_sum => 0,
       };
     }
+    
+    # Accumulate all intervals for this hour (same logic as main aggregation)
+    my ($Y,$M) = (parse_ymdh($start))[0,1];
+    my $hours_in_month = days_in_month($Y,$M) * 24;
+    my $kwh_total = kwh_total_for_block($b);
+    my $monthly_m = monthly_M_total_for_block($b);
+    my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
+    my $sum_total = $kwh_total + $fixed_per_hour;
+    
+    $map_ref->{$k}{n} += 1;
+    $map_ref->{$k}{total_sum} += $sum_total;
+  }
+  
+  # Calculate averages after accumulating all intervals
+  for my $k (keys %$map_ref) {
+    my $entry = $map_ref->{$k};
+    my $n = $entry->{n} || 1;  # Fallback to 1 matches main aggregation logic (line 263)
+    $entry->{avg_total_chf} = $entry->{total_sum} / $n;
+    # Clean up intermediate accumulation fields (not needed in final output)
+    delete $entry->{n};
+    delete $entry->{total_sum};
   }
 }
 
