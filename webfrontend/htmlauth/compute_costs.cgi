@@ -517,23 +517,17 @@ sub _latest_value_before_or_at_rel {
 
 my @relative;
 for my $off (0..23) {
-  my $t = time + $off * 3600;
+  # Get current time rounded down to the hour, THEN add offset
+  my $current_hour_epoch = int(time / 3600) * 3600;  # Round current time to hour
+  my $t = $current_hour_epoch + $off * 3600;
 
   # Local ISO for this hour (+ offset like +01:00 or +02:00)
   my $hs_local = strftime('%Y-%m-%dT%H:00:00', localtime($t));
   my $offstr = strftime('%z', localtime($t)); $offstr =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
   my $hs_iso_local = $hs_local . $offstr;
-
+  
   my $target_epoch = _iso_to_epoch($hs_iso_local);
   my $k = defined $target_epoch ? int($target_epoch/3600)*3600 : undef;
-
-  my $val;
-  if (defined $k && exists $hour_epoch_map_rel{$k} && defined $hour_epoch_map_rel{$k}{avg_total_chf}) {
-    $val = 0 + $hour_epoch_map_rel{$k}{avg_total_chf};
-  } else {
-    my ($v_prev, undef) = _latest_value_before_or_at_rel($target_epoch);
-    $val = 0 + ($v_prev // 0);  # never null
-  }
 
   push @relative, {
     offset        => $off,
