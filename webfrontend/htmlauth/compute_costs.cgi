@@ -529,6 +529,9 @@ for my $off (0..23) {
   my $target_epoch = _iso_to_epoch($hs_iso_local);
   my $k = defined $target_epoch ? int($target_epoch/3600)*3600 : undef;
 
+  my ($val, $val_hour_start) = _latest_value_before_or_at_rel($target_epoch);
+  $val //= 0;
+
   push @relative, {
     offset        => $off,
     hour_start    => $hs_iso_local,   # local hour with offset
