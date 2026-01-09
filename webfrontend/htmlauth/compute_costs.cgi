@@ -501,12 +501,22 @@ _add_blocks_to_map($tomorrow_doc, \%hour_epoch_map_rel);
 sub _latest_value_before_or_at_rel {
   my ($epoch) = @_;
   return (undef, undef) unless defined $epoch;
+  
+  # First, try exact match - round to hour boundary
+  my $k = int($epoch/3600)*3600;
+  if (exists $hour_epoch_map_rel{$k}) {
+    my $h = $hour_epoch_map_rel{$k};
+    my $v = defined $h->{avg_total_chf} ? 0 + $h->{avg_total_chf} : 0;
+    return ($v, $h->{hour_start});
+  }
+  
+  # If no exact match, fall back to latest before
   return (0 + ($hour_epoch_map_rel{$hour_epochs_sorted_rel[-1]}{avg_total_chf} // 0),
           $hour_epoch_map_rel{$hour_epochs_sorted_rel[-1]}{hour_start})
     if @hour_epochs_sorted_rel && $epoch >= $hour_epochs_sorted_rel[-1];
   for (my $i = $#hour_epochs_sorted_rel; $i >= 0; $i--) {
     my $e = $hour_epochs_sorted_rel[$i];
-    if ($e <= $epoch) {
+    if ($e < $epoch) {
       my $h = $hour_epoch_map_rel{$e};
       my $v = defined $h->{avg_total_chf} ? 0 + $h->{avg_total_chf} : 0;
       return ($v, $h->{hour_start});
