@@ -24,53 +24,19 @@ my $nopublish = ($q->param('nopublish') // '') ne '' ? 1 : 0;
 
 # ---- helpers ----
 
+# Use centralized read_json_file_with_error from common.pl
 sub read_latest_json {
   my $path = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
-  unless (-f $path) {
-    return ($path, undef, { error => "not_found", message => "No tariffs_latest.json in $lbpdatadir" });
-  }
-  open my $fh, '<', $path or return ($path, undef, { error => "open_failed", message => "Cannot open $path: $!" });
-  local $/ = undef;
-  my $raw = <$fh>;
-  close $fh;
-  my $doc = eval { JSON::PP->new->decode($raw) };
-  if (!$doc) {
-    return ($path, undef, { error => "invalid_json", message => "Could not parse tariffs_latest.json" });
-  }
-  return ($path, $doc, undef);
+  my ($doc, $err) = read_json_file_with_error($path);
+  return ($path, $doc, $err);
 }
 
 sub read_today_and_tomorrow_json {
   my $today_path = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
   my $tomorrow_path = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
   
-  my ($today_doc, $tomorrow_doc);
-  
-  # Read today's data
-  if (-f $today_path) {
-    if (open my $fh, '<', $today_path) {
-      local $/ = undef;
-      my $raw = <$fh>;
-      close $fh;
-      $today_doc = eval { JSON::PP->new->decode($raw) };
-      eval { LOGWARN("Failed to parse $today_path: $@"); 1; } if $@;
-    } else {
-      eval { LOGWARN("Failed to open $today_path: $!"); 1; };
-    }
-  }
-  
-  # Read tomorrow's data
-  if (-f $tomorrow_path) {
-    if (open my $fh, '<', $tomorrow_path) {
-      local $/ = undef;
-      my $raw = <$fh>;
-      close $fh;
-      $tomorrow_doc = eval { JSON::PP->new->decode($raw) };
-      eval { LOGWARN("Failed to parse $tomorrow_path: $@"); 1; } if $@;
-    } else {
-      eval { LOGWARN("Failed to open $tomorrow_path: $!"); 1; };
-    }
-  }
+  my $today_doc = read_json_file($today_path, { silent => 1 });
+  my $tomorrow_doc = read_json_file($tomorrow_path, { silent => 1 });
   
   return ($today_doc, $tomorrow_doc);
 }
@@ -158,49 +124,6 @@ sub _iso_to_epoch {
     return $utc_epoch - $offset_secs;
   }
   return undef;
-}
-
-# MQTT publish: prefer Net::MQTT::Simple when possible; otherwise use mosquitto_pub
-sub mqtt_publish {
-  my ($cfg, $topic, $payload_json) = @_;
-  return 0 unless $cfg->{mqtt_enabled};
-
-  my $host = $cfg->{mqtt_host} // 'localhost';
-  my $port = $cfg->{mqtt_port} // 1883;
-  my $user = $cfg->{mqtt_username} // '';
-  my $pass = $cfg->{mqtt_password} // '';
-
-  my $ok = 0;
-  if ($user eq '') {
-    eval {
-      require Net::MQTT::Simple;
-      Net::MQTT::Simple->import();
-      my $broker = "$host:$port";
-      my $mqtt = Net::MQTT::Simple->new($broker);
-      $mqtt->publish($topic => $payload_json);
-      $ok = 1;
-      1;
-    } or do {
-      $ok = 0;
-    };
-  }
-
-  if (!$ok) {
-    my $tmp = File::Spec->catfile($lbpdatadir, 'mqtt_payload.tmp.json');
-    open my $tfh, '>', $tmp or return 0;
-    print $tfh $payload_json;
-    close $tfh;
-
-    my @cmd = ('mosquitto_pub', '-h', $host, '-p', $port, '-t', $topic, '-f', $tmp, '-r');
-    if (defined $user && $user ne '') { push @cmd, ('-u', $user); }
-    if (defined $pass && $pass ne '') { push @cmd, ('-P', $pass); }
-
-    my $rc = system(@cmd);
-    unlink $tmp;
-    $ok = ($rc == 0) ? 1 : 0;
-  }
-
-  return $ok ? 1 : 0;
 }
 
 # ---- main ----
@@ -534,7 +457,7 @@ for my $off (0..23) {
   
   # If at minute 58 or 59, round up to next hour for the "now" reference point
   # This ensures relative offset 0 shows the upcoming hour's price
-  if ($minutes_into_hour >= 58) {
+  if ($minutes_into_hour >= HOUR_ROUNDING_THRESHOLD_MIN) {
     $current_hour_epoch += 3600;
   }
   
@@ -586,11 +509,11 @@ if (!$nopublish) {
   my $allow_absolute_publish = ($hour == 23 && $min >= 59) || ($hour == 0);
   
   if ($allow_absolute_publish) {
-    $pub_intervals_ok = mqtt_publish($cfg, $topic_intervals, $json_intervals) ? 1 : 0;
-    $pub_hourly_ok    = mqtt_publish($cfg, $topic_hourly,    $json_hourly)    ? 1 : 0;
+    $pub_intervals_ok = publish_mqtt($cfg, $topic_intervals, $json_intervals, { retain => 1, pre_encoded => 1 }) ? 1 : 0;
+    $pub_hourly_ok    = publish_mqtt($cfg, $topic_hourly,    $json_hourly,    { retain => 1, pre_encoded => 1 }) ? 1 : 0;
   }
   # Relative can always be published for rolling 24h view
-  $pub_relative_ok  = mqtt_publish($cfg, $topic_relative,  $json_relative)  ? 1 : 0;
+  $pub_relative_ok  = publish_mqtt($cfg, $topic_relative,  $json_relative,  { retain => 1, pre_encoded => 1 }) ? 1 : 0;
 }
 
 # --------------------------

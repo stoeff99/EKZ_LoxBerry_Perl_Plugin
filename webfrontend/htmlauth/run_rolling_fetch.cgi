@@ -104,15 +104,6 @@ sub normalize_prices_doc {
   return \%doc;
 }
 
-sub write_json_file {
-  my ($path, $doc) = @_;
-  my $json = JSON::PP->new->pretty(1)->encode($doc);
-  open my $fh, '>', $path or die "Cannot write $path: $!";
-  print $fh $json;
-  close $fh;
-  chmod 0640, $path;
-}
-
 # --------------------------
 # Helpers: values and fallback checks
 # --------------------------
@@ -248,7 +239,7 @@ sub log_event {
     chmod 0640, $path;
   }
   # Retention
-  my $days = int($cfg->{fetch_event_retain_days} // 14);
+  my $days = int($cfg->{fetch_event_retain_days} // EVENT_LOG_RETENTION_DAYS);
   _cleanup_old_files($lbplogdir, 'fetch_events-', $days);
 }
 
@@ -265,7 +256,7 @@ sub save_raw_payload {
     close $fh;
     chmod 0640, $path;
   }
-  my $days = int($cfg->{fetch_raw_retain_days} // 7);
+  my $days = int($cfg->{fetch_raw_retain_days} // RAW_LOG_RETENTION_DAYS);
   _cleanup_old_files($raw_dir, '', $days);
   return $path;
 }
@@ -323,13 +314,16 @@ sub save_fetch_record {
 # --------------------------
 # Main
 # --------------------------
+
+# Set timezone globally at startup
+my $STARTUP_CFG = eval { load_cfg() };
+if ($STARTUP_CFG && $STARTUP_CFG->{timezone}) {
+  $ENV{TZ} = $STARTUP_CFG->{timezone};
+  POSIX::tzset();
+}
+
 my $ok = eval {
   my $cfg = load_cfg();
-
-  # Ensure schedule checks use configured timezone (e.g., Europe/Zurich)
-  if ($cfg->{timezone}) {
-    local $ENV{TZ} = $cfg->{timezone};
-  }
 
   # Add a request correlation id for tracing
   my $rid = sprintf('%d-%d', time, $$);
@@ -339,7 +333,7 @@ my $ok = eval {
   my $schedule   = $cfg->{fetch_schedule} // '1';
 
   # Configurable grace minutes (default: 5)
-  my $grace = int($cfg->{publish_grace_minutes} // 5);
+  my $grace = int($cfg->{publish_grace_minutes} // GRACE_PERIOD_DEFAULT_MIN);
 
   log_event($cfg, $rid, 'start', {
     schedule    => $schedule,
@@ -428,16 +422,10 @@ my $ok = eval {
   }
 
   my ($start_iso, $end_iso);
-  my $now = localtime($now_epoch);
 
   if ($want_today) {
     LOGINF("Building TODAY window (00:00..24:00 local)");
-    my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
-    my $end   = $start + 24*3600 - 1;  # exclusive end to avoid 97 rows
-    my $off = $now->strftime('%z');            # e.g. +0100
-    $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/; # +0100 -> +01:00
-    $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
-    $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+    ($start_iso, $end_iso) = build_today_window();
     log_event($cfg, $rid, 'window', { kind => 'today', from => $start_iso, to => $end_iso });
   } else {
     if ($now_hour == 18 && $now_min < $grace) {
@@ -452,7 +440,7 @@ my $ok = eval {
       return 1;
     }
     LOGINF("Building NEXT-DAY window (tomorrow 00:00..24:00 local)");
-    ($start_iso, $end_iso) = build_scheduled_window();
+    ($start_iso, $end_iso) = build_tomorrow_window();
 
     if (!$force && $now_hour < 18) {
       log_event($cfg, $rid, 'skip', { reason => 'not_published_yet', current_hour => $now_hour });
@@ -507,7 +495,7 @@ my $ok = eval {
     });
     save_raw_payload($cfg, $rid, 'raw_customer', $payload);
 
-    if ($share < 0.90) {
+    if ($share < INTEGRATED_NONZERO_THRESHOLD) {
       my $base = $cfg->{api_base};
       my $tariff_name = $cfg->{fallback_tariff_name} // 'integrated_400D';
       LOGINF(sprintf("customerTariffs integrated CHF_kWh mostly zero (share=%.2f). Falling back to public tariff_name=%s", $share, $tariff_name));
@@ -524,7 +512,7 @@ my $ok = eval {
       };
       if ($ok_pub && defined $pub_payload && ref($pub_payload) eq 'HASH') {
         # Apply fixed regional fee to integrated for fallback result
-        my $fee_kwh = ($cfg->{fallback_regional_fee_kwh} // 0.0016) + 0;
+        my $fee_kwh = ($cfg->{fallback_regional_fee_kwh} // REGIONAL_FEE_FALLBACK_KWH) + 0;
         my $zero_reg = !!($cfg->{fallback_zero_regional_when_applied} // JSON::PP::true);
         $pub_payload = apply_fixed_regional_fee_to_integrated($pub_payload, $fee_kwh, $zero_reg);
 
