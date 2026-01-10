@@ -527,8 +527,17 @@ sub _latest_value_before_or_at_rel {
 
 my @relative;
 for my $off (0..23) {
-  # Get current time rounded down to the hour, THEN add offset
-  my $current_hour_epoch = int(time / 3600) * 3600;  # Round current time to hour
+  # Get current time, round to nearest hour considering the 58-minute threshold
+  my $now = time;
+  my $current_hour_epoch = int($now / 3600) * 3600;
+  my $minutes_into_hour = int(($now - $current_hour_epoch) / 60);
+  
+  # If at minute 58 or 59, round up to next hour for the "now" reference point
+  # This ensures relative offset 0 shows the upcoming hour's price
+  if ($minutes_into_hour >= 58) {
+    $current_hour_epoch += 3600;
+  }
+  
   my $t = $current_hour_epoch + $off * 3600;
 
   # Local ISO for this hour (+ offset like +01:00 or +02:00)
