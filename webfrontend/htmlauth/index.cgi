@@ -18,7 +18,7 @@ my $ASSET_BASE = "$BASEURL/assets";
 my $ICON_BASE  = "$BASEURL/Icons";
 
 # Use an HTML-escaped base URL for href attributes
-my $SAFE_BASEURL = CGI:: escapeHTML($BASEURL);
+my $SAFE_BASEURL = CGI::escapeHTML($BASEURL);
 
 # HTML head and body up to the <script> tag (interpolate variables)
 print <<"HTML_HEAD";
