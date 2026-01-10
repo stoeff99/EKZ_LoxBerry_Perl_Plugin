@@ -103,7 +103,7 @@ print <<"HTML_HEAD";
     <!-- Next 24 hours table -->
     <div class="card" id="next24h-card">
       <div style="display:flex;align-items:baseline;gap:10px;">
-        <h3 style="margin:0;" id="next24h-title">Next 24 hours</h3>
+        <h3 style="margin:0;">Next 24 hours</h3>
         <span class="small muted">Hourly average = mean of four 15‑min intervals</span>
       </div>
       <div id="next24h-note" class="small muted" style="margin-top:6px;">Reading computed costs…</div>
@@ -134,7 +134,6 @@ print <<'JAVASCRIPT';
   const next24Note  = $('#next24h-note');
   const next24Table = $('#next24h-table');
   const next24Body  = $('#next24h-body');
-  const next24Title = $('#next24h-title');
   const btnToday    = $('#btnToday');
   const btnTomorrow = $('#btnTomorrow');
 
@@ -360,9 +359,7 @@ print <<'JAVASCRIPT';
     }
 
     if (items.length === 0) {
-      next24Note.textContent = currentDay === 'today' 
-        ? 'No hourly data available. Click "Fetch now and draw".'
-        : 'No data available for tomorrow. Data is typically available after 18:00.';
+      next24Note.textContent = 'No hourly data available. Click “Fetch now and draw”.';
       next24Table.style.display = 'none';
       return;
     }
@@ -382,9 +379,6 @@ print <<'JAVASCRIPT';
       tr.appendChild(tdCost);
       next24Body.appendChild(tr);
     }
-    
-    // Update title based on current day
-    next24Title.textContent = currentDay === 'today' ? 'Next 24 hours' : 'Tomorrow (24 hours)';
     next24Note.style.display = 'none';
     next24Table.style.display = '';
   }
@@ -426,25 +420,6 @@ print <<'JAVASCRIPT';
   });
 
   viewSel.addEventListener('change', () => renderChart(viewSel.value));
-
-  // Day navigation handlers
-  btnToday.addEventListener('click', async () => {
-    if (currentDay === 'today') return;
-    currentDay = 'today';
-    btnToday.classList.add('active');
-    btnTomorrow.classList.remove('active');
-    await renderChart(viewSel.value);
-    fillNext24Hours();
-  });
-
-  btnTomorrow.addEventListener('click', async () => {
-    if (currentDay === 'tomorrow') return;
-    currentDay = 'tomorrow';
-    btnTomorrow.classList.add('active');
-    btnToday.classList.remove('active');
-    await renderChart(viewSel.value);
-    fillNext24Hours();
-  });
 
   // Initial load: compute only (no fetch)
   (async () => {
