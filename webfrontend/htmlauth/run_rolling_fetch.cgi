@@ -587,6 +587,29 @@ my $ok = eval {
   } else {
     $target_file = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
     LOGINF("Saving NEXT-DAY data to tariffs_tomorrow.json");
+    
+    # FIX: Ensure tariffs_today.json exists when fetching tomorrow's data
+    # This is critical for compute_costs.cgi to build correct relative values
+    my $today_file = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
+    my $latest_file = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
+    if (!-f $today_file && -f $latest_file) {
+      LOGINF("tariffs_today.json missing during tomorrow fetch, copying from tariffs_latest.json");
+      if (open my $src, '<', $latest_file) {
+        local $/ = undef;
+        my $content = <$src>;
+        close $src;
+        if (open my $dst, '>', $today_file) {
+          print $dst $content;
+          close $dst;
+          chmod 0640, $today_file;
+          LOGINF("Successfully created tariffs_today.json from tariffs_latest.json");
+        } else {
+          LOGWARN("Failed to write $today_file: $!");
+        }
+      } else {
+        LOGWARN("Failed to read $latest_file: $!");
+      }
+    }
   }
   write_json_file($target_file, $norm);
   save_raw_payload($cfg, $rid, 'normalized', $norm);
