@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 use CGI;
-use CGI:: Carp qw(fatalsToBrowser warningsToBrowser);  # show errors in browser
+use CGI::Carp qw(fatalsToBrowser warningsToBrowser);  # show errors in browser
 use JSON::PP;
 use File::Spec;
 use Time::Local qw(timegm timelocal);
@@ -437,17 +437,29 @@ sub _add_blocks_to_map {
   my ($doc, $map_ref) = @_;
   return unless $doc;
   
-  # FIX: Check for both 'rows' and 'prices' fields (same as main code)
-  my $rows = $doc->{rows};
-  $rows = $doc->{prices} if !defined $rows;
+  # Check for both 'rows' and 'prices' fields
+  my $rows = $doc->{prices};  # Try prices first (as shown in your JSON)
+  $rows = $doc->{rows} if !defined $rows;
   
-  return unless $rows && ref($rows) eq 'ARRAY';
+  unless ($rows && ref($rows) eq 'ARRAY' && @$rows > 0) {
+    eval { LOGWARN("_add_blocks_to_map:  No valid rows/prices array found"); 1; };
+    return;
+  }
+  
+  eval { LOGDEB("_add_blocks_to_map:  Processing " . scalar(@$rows) . " blocks"); 1; };
   
   for my $b (@$rows) {
-    my $start = $b->{start_timestamp} // next;
+    next unless ref($b) eq 'HASH';
+    my $start = $b->{start_timestamp};
+    next unless defined $start;
+    
     my $hour_key = hour_start_from($start);
     my $e = _iso_to_epoch($hour_key);
-    next unless defined $e;
+    unless (defined $e) {
+      eval { LOGWARN("Could not parse epoch from hour_key: $hour_key"); 1; };
+      next;
+    }
+    
     my $k = int($e/3600)*3600;
     
     unless (exists $map_ref->{$k}) {
@@ -469,6 +481,7 @@ sub _add_blocks_to_map {
     $map_ref->{$k}{total_sum} += $sum_total;
   }
   
+  # Calculate averages
   for my $k (keys %$map_ref) {
     my $entry = $map_ref->{$k};
     my $n = $entry->{n} || 1;
@@ -476,6 +489,8 @@ sub _add_blocks_to_map {
     delete $entry->{n};
     delete $entry->{total_sum};
   }
+  
+  eval { LOGDEB("_add_blocks_to_map: Added " . scalar(keys %$map_ref) . " hours to map"); 1; };
 }
 
 # Build combined hour map for relative view
@@ -484,8 +499,9 @@ my @hour_epochs_sorted_rel;
 
 # Add today's data
 if (! $today_doc) {
-  eval { LOGERR("Cannot build relative values:  today's tariff data is missing"); 1; };
+  eval { LOGERR("Cannot build relative values: today's tariff data is missing"); 1; };
 } else {
+  eval { LOGINF("Loading today's data for relative view"); 1; };
   _add_blocks_to_map($today_doc, \%hour_epoch_map_rel);
   eval { 
     my $count = scalar keys %hour_epoch_map_rel;
@@ -496,12 +512,26 @@ if (! $today_doc) {
 
 # Add tomorrow's data
 if ($tomorrow_doc) {
+  eval { LOGINF("Loading tomorrow's data for relative view"); 1; };
   _add_blocks_to_map($tomorrow_doc, \%hour_epoch_map_rel);
   eval { 
     my $count = scalar keys %hour_epoch_map_rel;
     LOGINF("Total $count hours in relative map after adding tomorrow's data"); 
     1; 
   };
+} else {
+  eval { LOGWARN("Tomorrow's tariff data not available yet"); 1; };
+}
+
+@hour_epochs_sorted_rel = sort { $a <=> $b } keys %hour_epoch_map_rel;
+
+# CRITICAL CHECK
+if (@hour_epochs_sorted_rel == 0) {
+  eval { LOGERR("CRITICAL: hour_epoch_map_rel is EMPTY!  Cannot calculate relative values! "); 1; };
+  eval { LOGDEB("Today doc:  " . (defined $today_doc ? "defined" : "undef")); 1; };
+  eval { LOGDEB("Tomorrow doc: " . (defined $tomorrow_doc ? "defined" :  "undef")); 1; };
+} else {
+  eval { LOGINF("Relative map has " . scalar(@hour_epochs_sorted_rel) . " hours"); 1; };
 }
 
 @hour_epochs_sorted_rel = sort { $a <=> $b } keys %hour_epoch_map_rel;
