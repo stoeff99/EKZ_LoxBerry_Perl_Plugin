@@ -2,7 +2,7 @@
 use strict;
 use warnings;
 
-use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
+use CGI:: Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI;
 
 my $q = CGI->new;
@@ -22,7 +22,7 @@ my $SAFE_BASEURL = CGI::escapeHTML($BASEURL);
 
 # HTML head and body up to the <script> tag (interpolate variables)
 print <<"HTML_HEAD";
-<!doctype html>
+<! doctype html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -30,28 +30,35 @@ print <<"HTML_HEAD";
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="preload" as="image" href="$ICON_BASE/banner.jpg">
   <link rel="stylesheet" href="$BASEURL/style.css">
-  <link rel="stylesheet" href="$ASSET_BASE/styles.css?v=20251220">
+  <link rel="stylesheet" href="$ASSET_BASE/styles.css? v=20251220">
   <style>
     #chartwrap { position: relative; width: 100%; min-height: 340px; }
     canvas { max-height: 520px; }
-    .controls { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin-bottom:.5rem;}
-    .legend { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:.5rem; color:#cbd5e1 }
+    .controls { display: flex; gap:. 75rem; align-items: center; flex-wrap:wrap; margin-bottom:. 5rem;}
+    .legend { display:flex; gap: 16px; align-items:center; flex-wrap:wrap; margin-top:.5rem; color:#cbd5e1 }
     .dot { width:11px; height:11px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle }
     .muted { color:#94a3b8 }
-    .btn { padding:.45rem .8rem; border-radius:8px; border:1px solid rgba(255,255,255,.18); background:#0f172a; color:#e5e7eb; cursor:pointer }
+    .btn { padding:.45rem .8rem; border-radius: 8px; border:1px solid rgba(255,255,255,. 18); background:#0f172a; color:#e5e7eb; cursor:pointer }
     .btn:hover { background:#111827 }
+    .btn:disabled { opacity:  0.5; cursor:  not-allowed; }
     select { padding:.35rem .6rem; border-radius:8px; border:1px solid rgba(255,255,255,.15); background:#0b1220; color:#e5e7eb }
-    .status { margin:.4rem 0 .3rem 0; font-size:.9rem }
+    .status { margin:. 4rem 0 .3rem 0; font-size:.9rem }
+
+    /* Day navigation buttons */
+    .day-nav { display:  flex; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
+    .day-nav . btn-nav { padding: 0.4rem 0.7rem; min-width: 80px; font-weight: 600; }
+    .day-nav .btn-nav. active { background:  #1e40af; border-color: #3b82f6; }
+    .day-nav .day-label { font-size: 1.1rem; font-weight: 600; color: #e5e7eb; min-width: 120px; text-align: center; }
 
     /* Next 24 hours table */
     .costs-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
     .costs-table th, .costs-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
     .costs-table th { text-align: left; color: #9fb0c9; font-weight: 700; }
-    .costs-table td.cost { text-align: right; font-variant-numeric: tabular-nums; }
+    .costs-table td. cost { text-align: right; font-variant-numeric: tabular-nums; }
   </style>
 
   <!-- Try to load Chart.js early; JS below also has a fallback to local assets -->
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd. min.js"></script>
   <script>
     const BASEURL = "$BASEURL";
   </script>
@@ -73,6 +80,13 @@ print <<"HTML_HEAD";
   <div class="container">
     <!-- Chart card -->
     <div class="card">
+      <!-- Day navigation -->
+      <div class="day-nav">
+        <button id="btnPrevDay" class="btn btn-nav" title="Previous day">◀ Left</button>
+        <div id="dayLabel" class="day-label">Today</div>
+        <button id="btnNextDay" class="btn btn-nav" title="Next day">Right ▶</button>
+      </div>
+
       <div class="controls">
         <button id="btnFetch" class="btn"><span class="emoji">⚡</span> Fetch now and draw</button>
         <label for="view" class="sr-only">View</label>
@@ -82,7 +96,7 @@ print <<"HTML_HEAD";
         </select>
         <span class="muted small">Bars colored by relative level (very low → very high)</span>
       </div>
-      <div id="status" class="status muted">Press “Fetch now and draw”. This fetches (backend), computes for UI (no MQTT), then renders.</div>
+      <div id="status" class="status muted">Press "Fetch now and draw".  This fetches (backend), computes for UI (no MQTT), then renders.</div>
       <div id="chartwrap">
         <canvas id="priceChart" aria-label="Price chart" role="img"></canvas>
       </div>
@@ -96,7 +110,7 @@ print <<"HTML_HEAD";
 
     <!-- Next 24 hours table -->
     <div class="card" id="next24h-card">
-      <div style="display:flex;align-items:baseline;gap:10px;">
+      <div style="display:flex;align-items:baseline;gap: 10px;">
         <h3 style="margin:0;">Next 24 hours</h3>
         <span class="small muted">Hourly average = mean of four 15‑min intervals</span>
       </div>
@@ -123,6 +137,9 @@ print <<'JAVASCRIPT';
   const status = $('#status');
   const viewSel = $('#view');
   const btnFetch = $('#btnFetch');
+  const btnPrevDay = $('#btnPrevDay');
+  const btnNextDay = $('#btnNextDay');
+  const dayLabel = $('#dayLabel');
   const ctx = document.getElementById('priceChart').getContext('2d');
 
   const next24Note  = $('#next24h-note');
@@ -131,10 +148,31 @@ print <<'JAVASCRIPT';
 
   let chart;
   let lastReport = null;
+  let currentDayOffset = 0; // 0 = today, 1 = tomorrow
 
   function setStatus(msg, isError=false) {
     status.textContent = msg;
-    status.style.color = isError ? '#ef4444' : '#94a3b8';
+    status. style.color = isError ? '#ef4444' : '#94a3b8';
+  }
+
+  function updateDayNavigation() {
+    // Update label
+    if (currentDayOffset === 0) {
+      dayLabel.textContent = 'Today';
+    } else if (currentDayOffset === 1) {
+      dayLabel.textContent = 'Tomorrow';
+    } else {
+      const date = new Date();
+      date.setDate(date.getDate() + currentDayOffset);
+      dayLabel.textContent = date. toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+
+    // Update button states
+    btnPrevDay.classList.toggle('active', currentDayOffset === 0);
+    btnNextDay.classList.toggle('active', currentDayOffset === 1);
+    
+    // Disable prev button if we're at today
+    btnPrevDay.disabled = currentDayOffset <= 0;
   }
 
   function loadScript(src) {
@@ -150,20 +188,20 @@ print <<'JAVASCRIPT';
 
   async function ensureChartLib() {
     if (window.Chart) return;
-    try { await loadScript('https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js'); } catch {}
+    try { await loadScript('https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd. min.js'); } catch {}
     if (window.Chart) return;
     const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chart.umd.min.js';
     try { await loadScript(local); } catch {}
-    if (!window.Chart) throw new Error('Chart.js not available');
+    if (!window. Chart) throw new Error('Chart. js not available');
   }
 
   async function ensureTimeAdapter() {
     const hasAdapter = () => !!(window.Chart && Chart._adapters && Chart._adapters._date && Chart._adapters._date.parse);
     if (hasAdapter()) return;
     try {
-      await loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js');
+      await loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min. js');
     } catch (e) {
-      console.warn('CDN adapter failed:', e.message);
+      console.warn('CDN adapter failed:', e. message);
     }
     if (hasAdapter()) return;
     const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chartjs-adapter-date-fns.bundle.min.js';
@@ -183,14 +221,34 @@ print <<'JAVASCRIPT';
     return (v) => v <= q25 ? '#16a34a' : v <= q50 ? '#4ade80' : v <= q75 ? '#fbbf24' : '#ef4444';
   }
 
+  function getStartAndEndOfDay(dayOffset) {
+    const start = new Date();
+    start.setDate(start.getDate() + dayOffset);
+    start.setHours(0, 0, 0, 0);
+    
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    
+    return { start:  start. getTime(), end: end.getTime() };
+  }
+
   function pointsFromReport(mode) {
     if (!lastReport) return [];
+    
+    const { start, end } = getStartAndEndOfDay(currentDayOffset);
+    
     if (mode === 'hourly') {
       const rows = Array.isArray(lastReport.hourly) ? lastReport.hourly : [];
-      return rows.map(r => ({ x: r.hour_start, y: Number(r.avg_total_chf || 0) }));
+      return rows
+        .map(r => ({ x: r.hour_start, y: Number(r.avg_total_chf || 0), _t: Date.parse(r.hour_start) }))
+        .filter(p => ! isNaN(p._t) && p._t >= start && p._t < end)
+        .map(p => ({ x: p. x, y: p.y }));
     } else {
       const rows = Array.isArray(lastReport.intervals) ? lastReport.intervals : [];
-      return rows.map(r => ({ x: r.start_timestamp, y: Number(r.total_chf || 0) }));
+      return rows
+        .map(r => ({ x: r.start_timestamp, y: Number(r.total_chf || 0), _t: Date.parse(r. start_timestamp) }))
+        .filter(p => !isNaN(p._t) && p._t >= start && p._t < end)
+        .map(p => ({ x: p.x, y: p.y }));
     }
   }
 
@@ -200,7 +258,7 @@ print <<'JAVASCRIPT';
     return d.toLocaleString(undefined, {
       weekday: 'short',
       hour: '2-digit',
-      minute: hourly ? undefined : '2-digit',
+      minute:  hourly ? undefined : '2-digit',
       month: 'short',
       day: '2-digit'
     }).replace(',','');
@@ -210,13 +268,19 @@ print <<'JAVASCRIPT';
     await ensureChartLib();
     await ensureTimeAdapter();
 
-    const unit = mode === 'hourly' ? 'hour' : 'minute';
+    const unit = mode === 'hourly' ? 'hour' :  'minute';
     const points = pointsFromReport(mode);
     const colorFn = colorByQuantiles(points.map(p => p.y));
-    const adapterReady = !!(window.Chart && Chart._adapters && Chart._adapters._date && Chart._adapters._date.parse);
+    const adapterReady = ! !(window.Chart && Chart._adapters && Chart._adapters._date && Chart._adapters._date. parse);
 
     const existing = (window.Chart && Chart.getChart) ? Chart.getChart(document.getElementById('priceChart')) : null;
     if (existing) existing.destroy();
+
+    // Show message if no data for selected day
+    if (points.length === 0) {
+      const dayName = currentDayOffset === 0 ?  'today' : currentDayOffset === 1 ?  'tomorrow' : 'this day';
+      setStatus(`No data available for ${dayName}. Try fetching data. `, false);
+    }
 
     let data, options;
     if (adapterReady) {
@@ -242,8 +306,8 @@ print <<'JAVASCRIPT';
           },
           y: {
             ticks: { color: '#cbd5e1' },
-            grid: { color: 'rgba(148,163,184,0.15)' },
-            title: { display: true, text: 'CHF/kWh', color: '#cbd5e1' }
+            grid:  { color: 'rgba(148,163,184,0.15)' },
+            title: { display: true, text:  'CHF/kWh', color: '#cbd5e1' }
           }
         },
         plugins: {
@@ -251,12 +315,12 @@ print <<'JAVASCRIPT';
           tooltip: {
             callbacks: {
               title: (items) => {
-                const ts = items?.[0]?.parsed?.x;
+                const ts = items? .[0]?.parsed?.x;
                 if (!ts) return '';
                 const d = new Date(ts);
-                return isNaN(d) ? String(ts) : d.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', weekday: 'short', month: 'short', day: '2-digit' });
+                return isNaN(d) ? String(ts) : d.toLocaleString(undefined, { hour: '2-digit', minute:  '2-digit', weekday: 'short', month: 'short', day:  '2-digit' });
               },
-              label: (ctx) => ` Total: ${Number(ctx.parsed.y).toFixed(4)} CHF/kWh`
+              label: (ctx) => ` Total: ${Number(ctx.parsed. y).toFixed(4)} CHF/kWh`
             }
           }
         }
@@ -264,7 +328,7 @@ print <<'JAVASCRIPT';
     } else {
       const hourly = mode === 'hourly';
       const labels = points.map(p => fmtLabel(p.x, hourly));
-      const values = points.map(p => p.y);
+      const values = points.map(p => p. y);
 
       data = {
         labels,
@@ -288,14 +352,14 @@ print <<'JAVASCRIPT';
           y: {
             ticks: { color: '#cbd5e1' },
             grid: { color: 'rgba(148,163,184,0.15)' },
-            title: { display: true, text: 'CHF/kWh', color: '#cbd5e1' }
+            title: { display: true, text: 'CHF/kWh', color:  '#cbd5e1' }
           }
         },
         plugins: {
           legend: { display: false },
           tooltip: {
             callbacks: {
-              title: (items) => items?.[0]?.label ?? '',
+              title: (items) => items?.[0]?.label ??  '',
               label: (ctx) => ` Total: ${Number(ctx.raw).toFixed(4)} CHF/kWh`
             }
           }
@@ -307,17 +371,17 @@ print <<'JAVASCRIPT';
   }
 
   function fillNext24Hours() {
-    if (!lastReport) return;
+    if (! lastReport) return;
 
     const now = Date.now();
-    const items = (Array.isArray(lastReport.hourly) ? lastReport.hourly : [])
+    const items = (Array.isArray(lastReport. hourly) ? lastReport.hourly : [])
       .map(h => Object.assign({ _t: Date.parse(h.hour_start) }, h))
       .filter(h => !isNaN(h._t) && h._t >= now)
       .sort((a,b) => a._t - b._t)
       .slice(0, 24);
 
     if (items.length === 0) {
-      next24Note.textContent = 'No hourly data available. Click “Fetch now and draw”.';
+      next24Note.textContent = 'No hourly data available.  Click "Fetch now and draw". ';
       next24Table.style.display = 'none';
       return;
     }
@@ -327,10 +391,10 @@ print <<'JAVASCRIPT';
       const tr = document.createElement('tr');
       const tdTime = document.createElement('td');
       const tdCost = document.createElement('td');
-      const d = new Date(h.hour_start);
+      const d = new Date(h. hour_start);
       tdTime.textContent = isNaN(d)
         ? h.hour_start
-        : d.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit', month: 'short', day: '2-digit' }).replace(',','');
+        : d.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute:  '2-digit', month: 'short', day: '2-digit' }).replace(',','');
       tdCost.textContent = Number(h.avg_total_chf || 0).toFixed(4);
       tdCost.className = 'cost';
       tr.appendChild(tdTime);
@@ -343,8 +407,8 @@ print <<'JAVASCRIPT';
 
   async function fetchBackendAndCompute() {
     setStatus('Fetching (backend)…');
-    const r1 = await fetch('run_rolling_fetch.cgi?force=1', { cache: 'no-store' });
-    if (!r1.ok) throw new Error('Fetch backend failed: HTTP ' + r1.status);
+    const r1 = await fetch('run_rolling_fetch. cgi? force=1', { cache: 'no-store' });
+    if (!r1.ok) throw new Error('Fetch backend failed:  HTTP ' + r1.status);
 
     setStatus('Computing costs for UI…');
     const r2 = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
@@ -361,7 +425,7 @@ print <<'JAVASCRIPT';
 
     const ic = (lastReport && lastReport.interval_count_output) || 0;
     const hc = (lastReport && lastReport.hour_count_output) || 0;
-    setStatus(`Ready. Intervals: ${ic}, hours: ${hc}.`);
+    setStatus(`Ready.  Intervals: ${ic}, hours: ${hc}.`);
   }
 
   btnFetch.addEventListener('click', async (e) => {
@@ -373,13 +437,27 @@ print <<'JAVASCRIPT';
     } catch (err) {
       setStatus(err.message, true);
     } finally {
-      btn.disabled = false;
+      btn. disabled = false;
     }
+  });
+
+  btnPrevDay.addEventListener('click', async () => {
+    if (currentDayOffset > 0) {
+      currentDayOffset--;
+      updateDayNavigation();
+      await renderChart(viewSel. value);
+    }
+  });
+
+  btnNextDay.addEventListener('click', async () => {
+    currentDayOffset++;
+    updateDayNavigation();
+    await renderChart(viewSel.value);
   });
 
   viewSel.addEventListener('change', () => renderChart(viewSel.value));
 
-  // Initial load: compute only (no fetch)
+  // Initial load:  compute only (no fetch)
   (async () => {
     try {
       setStatus('Loading computed costs…');
@@ -391,6 +469,7 @@ print <<'JAVASCRIPT';
         throw new Error('compute_costs error: ' + (lastReport.message || lastReport.error));
       }
 
+      updateDayNavigation();
       await renderChart(viewSel.value);
       fillNext24Hours();
       setStatus('Ready.');
