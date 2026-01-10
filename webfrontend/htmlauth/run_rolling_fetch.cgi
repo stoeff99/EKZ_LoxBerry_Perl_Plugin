@@ -1,10 +1,10 @@
 #!/usr/bin/perl
 use strict;
 use warnings;
-use Time:: Piece;
-use CGI:: Carp qw(fatalsToBrowser);
+use Time::Piece;
+use CGI::Carp qw(fatalsToBrowser);
 use CGI;
-use JSON:: PP;
+use JSON::PP;
 use File::Spec;
 use POSIX qw(strftime);
 use Tie::IxHash;           # preserve object key order
@@ -37,7 +37,7 @@ sub _norm_unit_name {
   my ($u) = @_;
   return 'CHF_kWh' if defined $u && lc($u) eq 'chf_kwh';
   return 'CHF_M'   if defined $u && lc($u) eq 'chf_m';
-  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]? kwh$/;
+  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]?kwh$/;
   return 'CHF_M'   if defined $u && lc($u) =~ /^chf[_-]?m$/;
   return $u // 'CHF_kWh';
 }
@@ -197,7 +197,7 @@ sub _ensure_dir {
   my ($dir) = @_;
   return if -d $dir;
   require File::Path;
-  File::Path::make_path($dir);
+  File:: Path::make_path($dir);
 }
 
 sub _cleanup_old_files {
@@ -270,7 +270,7 @@ sub save_fetch_record {
   # Wrap entire operation in eval to ensure it never breaks the main fetch
   eval {
     # Create fetch_records directory if it doesn't exist
-    my $records_dir = File::Spec->catdir($lbpdatadir, 'fetch_records');
+    my $records_dir = File:: Spec->catdir($lbpdatadir, 'fetch_records');
     unless (-d $records_dir) {
       _ensure_dir($records_dir);
       chmod 0750, $records_dir;
@@ -281,7 +281,7 @@ sub save_fetch_record {
     my $oldest_file = File::Spec->catfile($records_dir, 'fetch_record_09.json');
     unlink $oldest_file if -f $oldest_file;
     
-    # Rotate files 08→09, 07→08, .. ., 00→01
+    # Rotate files 08→09, 07→08, ..., 00→01
     for (my $i = 8; $i >= 0; $i--) {
       my $old_num = sprintf('%02d', $i);
       my $new_num = sprintf('%02d', $i + 1);
@@ -332,12 +332,12 @@ my $ok = eval {
   my $want_today = ($q->param('today') // '') eq '1' ? 1 : 0;
   my $schedule   = $cfg->{fetch_schedule} // '1';
 
-  # Configurable grace minutes (default: 5)
+  # Configurable grace minutes (default:  5)
   my $grace = int($cfg->{publish_grace_minutes} // $GRACE_PERIOD_DEFAULT_MIN);
 
   log_event($cfg, $rid, 'start', {
     schedule    => $schedule,
-    force       => ($force ?  JSON::PP:: true :  JSON::PP::false),
+    force       => ($force ?  JSON::PP:: true : JSON::PP::false),
     param_today => ($want_today ? JSON::PP:: true : JSON::PP::false),
     grace_minutes => $grace,
   });
@@ -513,7 +513,7 @@ my $ok = eval {
       if ($ok_pub && defined $pub_payload && ref($pub_payload) eq 'HASH') {
         # Apply fixed regional fee to integrated for fallback result
         my $fee_kwh = ($cfg->{fallback_regional_fee_kwh} // $REGIONAL_FEE_FALLBACK_KWH) + 0;
-        my $zero_reg = !!($cfg->{fallback_zero_regional_when_applied} // JSON::PP::true);
+        my $zero_reg = !! ($cfg->{fallback_zero_regional_when_applied} // JSON::PP::true);
         $pub_payload = apply_fixed_regional_fee_to_integrated($pub_payload, $fee_kwh, $zero_reg);
 
         $payload = $pub_payload;
@@ -524,7 +524,7 @@ my $ok = eval {
         save_raw_payload($cfg, $rid, 'raw_public_fallback', $payload);
         log_event($cfg, $rid, 'fallback_applied', {
           fee_kwh      => $fee_kwh+0,
-          zero_regional => ($zero_reg ? JSON::PP:: true : JSON::PP::false),
+          zero_regional => ($zero_reg ? JSON:: PP::true : JSON::PP:: false),
         });
       } else {
         LOGERR("Public fallback tariffs failed; keeping customerTariffs payload.  Error: " . ($@ // 'unknown'));
@@ -653,7 +653,7 @@ my $ok = eval {
     normalized_payload => $norm,
     fallback_applied   => ($fallback_applied ? JSON::PP::true : JSON::PP::false),
     mqtt_published     => ($mqtt_ok ? JSON::PP::true : JSON::PP::false),
-    compute_completed  => ($compute_ok ? JSON::PP::true : JSON::PP::false),
+    compute_completed  => ($compute_ok ? JSON:: PP::true : JSON::PP:: false),
   };
   
   save_fetch_record($fetch_record);
