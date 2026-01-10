@@ -180,23 +180,23 @@ sub ensure_daily_rotation {
   }
 }
 
-# ---- main ----
+## ---- main ----
 
 my $cfg = eval { load_cfg() } // {};
 
 # Ensure rotation happened if we're in hour 0
 ensure_daily_rotation($cfg);
 
-# FIX: Read BOTH today and tomorrow data for processing
+# FIX: Read today's data (this is for the source_path reference)
 my ($src_path, $doc, $err) = read_latest_json();
 if ($err) {
   print JSON::PP->new->encode($err);
   exit 0;
 }
 
-# Also read tomorrow's data if available
-my $tomorrow_path = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
-my $tomorrow_doc = read_json_file($tomorrow_path, { silent => 1 });
+# FIX: Read tomorrow's data if available
+my $tomorrow_file = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
+my $doc_tomorrow = read_json_file($tomorrow_file, { silent => 1 });
 
 # Merge rows from both files
 my $rows = $doc->{prices};
@@ -206,12 +206,12 @@ $rows ||= [];
 my @all_rows = @$rows;
 
 # Add tomorrow's data if available
-if ($tomorrow_doc) {
-  my $tomorrow_rows = $tomorrow_doc->{prices};
-  $tomorrow_rows = $tomorrow_doc->{rows} if !defined $tomorrow_rows;
+if ($doc_tomorrow) {
+  my $tomorrow_rows = $doc_tomorrow->{prices};
+  $tomorrow_rows = $doc_tomorrow->{rows} if !defined $tomorrow_rows;
   if ($tomorrow_rows && ref($tomorrow_rows) eq 'ARRAY') {
     push @all_rows, @$tomorrow_rows;
-    eval { LOGINF("Merged " . scalar(@$tomorrow_rows) . " rows from tomorrow's data"); 1; };
+    eval { LOGINF("Merged " .  scalar(@$tomorrow_rows) . " rows from tomorrow's data"); 1; };
   }
 }
 
