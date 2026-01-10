@@ -15,6 +15,25 @@ require "$FindBin::Bin/common.pl";
 
 our ($lbpdatadir, $lbpurl, $lbptemplatedir, $lbplogdir);
 
+# Import constants from common.pl
+our (
+  $EVENT_LOG_RETENTION_DAYS,
+  $GRACE_PERIOD_DEFAULT_MIN,
+  $INTEGRATED_NONZERO_THRESHOLD,
+  $REGIONAL_FEE_FALLBACK_KWH,
+  $RAW_LOG_RETENTION_DAYS,
+  $FETCH_RECORDS_RING_SIZE,
+  $INFLUX_WRITE_TIMEOUT_SEC,
+  $TOKEN_EXPIRY_BUFFER_SEC,
+  $TOKEN_DEFAULT_EXPIRES_SEC,
+  $HTTP_TIMEOUT_SEC,
+  $HTTP_RETRY_BASE_SLEEP_SEC,
+  $HTTP_RETRY_BACKOFF_FACTOR,
+  $WINDOW_END_OFFSET_SEC,
+  $HOUR_ROUNDING_THRESHOLD_MIN,
+  $COMPUTE_CRON_MINUTE,
+);
+
 my $q = CGI->new;
 print $q->header('application/json; charset=utf-8');
 
