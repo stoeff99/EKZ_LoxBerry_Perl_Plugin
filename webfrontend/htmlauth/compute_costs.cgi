@@ -510,7 +510,7 @@ for my $off (0..23) {
   
   # If at minute 58 or 59, round up to next hour for the "now" reference point
   # This ensures relative offset 0 shows the upcoming hour's price
-  if ($minutes_into_hour >= HOUR_ROUNDING_THRESHOLD_MIN) {
+  if ($minutes_into_hour >= $HOUR_ROUNDING_THRESHOLD_MIN) {
     $current_hour_epoch += 3600;
   }
   
@@ -559,7 +559,7 @@ if (!$nopublish) {
   # Publish if the data's window overlaps with today
   my @lt_now = localtime(time);
   my $today_start = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
-  my $today_end = $today_start + WINDOW_END_OFFSET_SEC;
+  my $today_end = $today_start + $WINDOW_END_OFFSET_SEC;
   
   my $allow_absolute_publish = 0;
   
