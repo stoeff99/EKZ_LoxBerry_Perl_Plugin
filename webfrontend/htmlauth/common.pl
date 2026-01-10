@@ -13,6 +13,36 @@ use File::Path qw(make_path);
 use FindBin;
 use URI::Escape qw(uri_escape_utf8);
 
+# --------------------------
+# Constants
+# --------------------------
+use constant {
+  # Token management
+  TOKEN_EXPIRY_BUFFER_SEC    => 30,     # Buffer before token expiry to trigger refresh
+  TOKEN_DEFAULT_EXPIRES_SEC  => 300,    # Default token lifetime if not specified by server
+  
+  # HTTP settings
+  HTTP_TIMEOUT_SEC           => 30,     # HTTP request timeout
+  HTTP_RETRY_BASE_SLEEP_SEC  => 1,      # Base sleep duration between retries
+  HTTP_RETRY_BACKOFF_FACTOR  => 2,      # Exponential backoff multiplier
+  
+  # Time windows
+  WINDOW_END_OFFSET_SEC      => (24*3600 - 1),  # Offset for end of day window (23:59:59)
+  GRACE_PERIOD_DEFAULT_MIN   => 5,      # Default grace period at 18:00 for next-day fetch
+  HOUR_ROUNDING_THRESHOLD_MIN => 58,    # Minute threshold for rounding to next hour
+  COMPUTE_CRON_MINUTE        => 59,     # Minute when compute cron job runs
+  
+  # Thresholds
+  INTEGRATED_NONZERO_THRESHOLD => 0.90, # Threshold for integrated tariff validity check
+  REGIONAL_FEE_FALLBACK_KWH    => 0.0016, # Fallback regional fee in CHF/kWh
+  
+  # Logging and archival
+  EVENT_LOG_RETENTION_DAYS   => 14,     # Days to retain event logs
+  RAW_LOG_RETENTION_DAYS     => 7,      # Days to retain raw API response logs
+  FETCH_RECORDS_RING_SIZE    => 10,     # Number of fetch records to keep in ring buffer
+  INFLUX_WRITE_TIMEOUT_SEC   => 20,     # Timeout for InfluxDB writes
+};
+
 # SDK globals under strict
 our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
@@ -96,11 +126,126 @@ sub load_cfg {
 }
 
 # --------------------------
+# Centralized JSON File I/O
+# --------------------------
+
+sub read_json_file {
+  my ($path, $opts) = @_;
+  $opts //= {};
+  
+  my $default = $opts->{default};
+  my $silent = $opts->{silent} // 0;
+  
+  unless (-f $path) {
+    return $default if defined $default;
+    _lb_log('ERR', "JSON file not found: $path") unless $silent;
+    return undef;
+  }
+  
+  my $ok = eval {
+    open my $fh, '<', $path or die "Cannot open $path: $!";
+    local $/ = undef;
+    my $raw = <$fh>;
+    close $fh;
+    
+    my $data = decode_json($raw);
+    die "Invalid JSON in $path (not a hash)" unless ref $data eq 'HASH';
+    return $data;
+  };
+  
+  if ($@) {
+    my $err = $@ || 'unknown error';
+    return $default if defined $default;
+    _lb_log('ERR', "Failed to read JSON from $path: $err") unless $silent;
+    return undef;
+  }
+  
+  return $ok;
+}
+
+sub write_json_file {
+  my ($path, $data, $opts) = @_;
+  $opts //= {};
+  
+  my $pretty = $opts->{pretty} // 1;
+  my $canonical = $opts->{canonical} // 1;
+  my $mode = $opts->{mode} // 0640;
+  my $create_dirs = $opts->{create_dirs} // 1;
+  
+  return 0 unless defined $data && ref $data eq 'HASH';
+  
+  # Create parent directories if needed
+  if ($create_dirs) {
+    my ($vol, $dir, undef) = File::Spec->splitpath($path);
+    if ($dir && !-d $dir) {
+      eval { make_path($dir); 1 } or do {
+        _lb_log('ERR', "Failed to create directory for $path: $@");
+        return 0;
+      };
+    }
+  }
+  
+  my $ok = eval {
+    my $json = JSON::PP->new;
+    $json->pretty(1) if $pretty;
+    $json->canonical(1) if $canonical;
+    
+    open my $fh, '>', $path or die "Cannot write $path: $!";
+    print $fh $json->encode($data);
+    close $fh;
+    
+    chmod $mode, $path if $mode;
+    1;
+  };
+  
+  if ($@) {
+    _lb_log('ERR', "Failed to write JSON to $path: $@");
+    return 0;
+  }
+  
+  return 1;
+}
+
+sub read_json_file_with_error {
+  my ($path) = @_;
+  
+  unless (-f $path) {
+    return (undef, { error => "not_found", message => "File not found: $path" });
+  }
+  
+  my $data = eval {
+    open my $fh, '<', $path or die "Cannot open $path: $!";
+    local $/ = undef;
+    my $raw = <$fh>;
+    close $fh;
+    
+    my $d = decode_json($raw);
+    die "Invalid JSON (not a hash)" unless ref $d eq 'HASH';
+    return $d;
+  };
+  
+  if ($@) {
+    my $err = $@ || 'unknown error';
+    if ($err =~ /Cannot open/) {
+      return (undef, { error => "open_failed", message => "Cannot open $path: $err" });
+    } else {
+      return (undef, { error => "invalid_json", message => "Could not parse JSON: $err" });
+    }
+  }
+  
+  return ($data, undef);
+}
+
+# --------------------------
 # MQTT publish helper with fallback for insecure password login
 # --------------------------
 
 sub publish_mqtt {
-  my ($cfg, $topic, $payload) = @_;
+  my ($cfg, $topic, $payload, $opts) = @_;
+  $opts //= {};
+  
+  my $retain      = $opts->{retain}      // 0;
+  my $pre_encoded = $opts->{pre_encoded} // 0;
 
   return 1 unless $cfg && $cfg->{mqtt_enabled};
   return 1 unless $topic;
@@ -109,7 +254,9 @@ sub publish_mqtt {
   my $port = int($cfg->{mqtt_port} // 1883);
   my $user = $cfg->{mqtt_username} // '';
   my $pass = $cfg->{mqtt_password} // '';
-  my $msg  = ref($payload) ? encode_json($payload) : $payload;
+  
+  # Handle payload encoding based on pre_encoded flag
+  my $msg = $pre_encoded ? $payload : (ref($payload) ? encode_json($payload) : $payload);
 
   my $ok = 1;
   my $used_cli_fallback = 0;
@@ -125,7 +272,13 @@ sub publish_mqtt {
         $mqtt->login($user, $pass // '');
       }
 
-      $mqtt->publish($topic => $msg);
+      # Net::MQTT::Simple doesn't directly support retain flag
+      # So we need to use retain method or fall back to CLI
+      if ($retain) {
+        $mqtt->retain($topic => $msg);
+      } else {
+        $mqtt->publish($topic => $msg);
+      }
       1;
     };
   };
@@ -140,7 +293,7 @@ sub publish_mqtt {
     if (defined $user && $user ne '') {
       $used_cli_fallback = 1;
 
-      # Write payload to a temp file and use mosquitto_pub -f to avoid quoting issues
+      # Write payload to a PID-based temp file to avoid race conditions
       my $tmpfile = File::Spec->catfile($LBPDATADIR || '/tmp', "mqtt_payload_$$.json");
       eval {
         open my $tfh, '>', $tmpfile or die "Cannot write $tmpfile: $!";
@@ -158,6 +311,7 @@ sub publish_mqtt {
       };
 
       my @cmd = ('mosquitto_pub', '-h', $host, '-p', $port, '-t', $topic, '-f', $tmpfile);
+      push @cmd, '-r' if $retain;  # Add retain flag if requested
       push @cmd, ('-u', $user, '-P', $pass // '') if $user ne '';
 
       my $rc = system(@cmd);
@@ -190,6 +344,10 @@ sub publish_mqtt {
       print $lf scalar(localtime) . " - MQTT publish used mosquitto_pub fallback\n";
       close $lf;
     }
+  }
+
+  return $ok;
+}
   }
 
   return $ok;
@@ -256,14 +414,14 @@ sub ensure_access_token {
   my ($cfg) = @_;
   my $tok = load_tokens($cfg);
 
-  if ($tok->{access_token} && $tok->{expires_at} && time() < ($tok->{expires_at} - 30)) {
+  if ($tok->{access_token} && $tok->{expires_at} && time() < ($tok->{expires_at} - TOKEN_EXPIRY_BUFFER_SEC)) {
     return $tok->{access_token};
   }
   unless ($tok->{refresh_token}) {
     die "No refresh_token; sign in via UI once (or include offline_access in scope).";
   }
 
-  my $ua = LWP::UserAgent->new(timeout => 30);
+  my $ua = LWP::UserAgent->new(timeout => HTTP_TIMEOUT_SEC);
   my $endpoint = $cfg->{auth_server_base} . "/realms/$cfg->{realm}/protocol/openid-connect/token";
 
   my $req = POST $endpoint, [
@@ -278,7 +436,7 @@ sub ensure_access_token {
   my $j = decode_json($res->decoded_content);
   $tok->{access_token}  = $j->{access_token} // '';
   $tok->{refresh_token} = $j->{refresh_token} // $tok->{refresh_token};
-  $tok->{expires_at}    = time() + int($j->{expires_in} // 300);
+  $tok->{expires_at}    = time() + int($j->{expires_in} // TOKEN_DEFAULT_EXPIRES_SEC);
   save_tokens($tok, $cfg);
   return $tok->{access_token};
 }
@@ -289,7 +447,7 @@ sub ensure_access_token {
 sub get_json_with_retry {
   my ($url, $headers, $params, $attempts) = @_;
   $attempts = ($attempts && $attempts > 0) ? $attempts : 3;
-  my $ua = LWP::UserAgent->new(timeout => 30);
+  my $ua = LWP::UserAgent->new(timeout => HTTP_TIMEOUT_SEC);
 
   # URL-encode query parameters
   my $qs = '';
@@ -316,7 +474,7 @@ sub get_json_with_retry {
     }
     $last_code = $res->code;
     $last_body = eval { $res->decoded_content } // '';
-    sleep($i == 0 ? 1 : (2**$i));
+    sleep($i == 0 ? HTTP_RETRY_BASE_SLEEP_SEC : (HTTP_RETRY_BACKOFF_FACTOR**$i));
   }
   die "GET $full_url failed after $attempts attempts; last HTTP $last_code: $last_body";
 }
@@ -585,7 +743,7 @@ sub has_tokens {
   my ($cfg) = @_;
   my $tok = load_tokens($cfg) || {};
   return 1 if ($tok->{refresh_token});
-  return 1 if ($tok->{access_token} && $tok->{expires_at} && time() < ($tok->{expires_at} - 30));
+  return 1 if ($tok->{access_token} && $tok->{expires_at} && time() < ($tok->{expires_at} - TOKEN_EXPIRY_BUFFER_SEC));
   return 0;
 }
 
@@ -605,22 +763,46 @@ sub try_ensure_linked {
   return ($status, $link_url, $err);
 }
 
-sub build_scheduled_window {
-  # Build window for the "following day" (next-day 00:00 local -> +24h)
-  # Per EKZ API: dynamic tariffs are published until 18:00 for the following day,
-  # and the tariffs themselves cover the next day's 00:00..24:00 (96 intervals).
-  my $now = localtime;
-  my $tomorrow = $now + 24*3600;
-  my $start = Time::Piece->strptime($tomorrow->strftime('%Y-%m-%d').' 00:00:00', '%Y-%m-%d %H:%M:%S');
-  my $end = $start + 24*3600 - 1;
+# --------------------------
+# Unified Time Window Building
+# --------------------------
 
+sub build_calendar_day_window {
+  my ($date_epoch, $offset_days) = @_;
+  $offset_days //= 0;
+  
+  # Get the target day by adding offset
+  my $target_epoch = $date_epoch + ($offset_days * 24 * 3600);
+  my $now = localtime($target_epoch);
+  
+  # Build window for the calendar day: 00:00:00 to 23:59:59
+  my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
+  my $end = $start + WINDOW_END_OFFSET_SEC;
+  
   # Keep local timezone offset in the ISO strings (e.g. +01:00)
   my $off = $now->strftime('%z');            # e.g. +0100
   $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/; # +0100 -> +01:00
-
+  
   my $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
   my $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+  
   return ($start_iso, $end_iso);
+}
+
+sub build_today_window {
+  return build_calendar_day_window(time(), 0);
+}
+
+sub build_tomorrow_window {
+  return build_calendar_day_window(time(), 1);
+}
+
+sub build_scheduled_window {
+  # Backward compatibility alias for build_tomorrow_window
+  # Build window for the "following day" (next-day 00:00 local -> +24h)
+  # Per EKZ API: dynamic tariffs are published until 18:00 for the following day,
+  # and the tariffs themselves cover the next day's 00:00..24:00 (96 intervals).
+  return build_tomorrow_window();
 }
 
 1;
