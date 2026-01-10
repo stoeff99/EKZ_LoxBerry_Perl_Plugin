@@ -40,9 +40,27 @@ sub read_latest_json {
 sub read_today_and_tomorrow_json {
   my $today_path = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
   my $tomorrow_path = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
+  my $latest_path = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
   
   my $today_doc = read_json_file($today_path, { silent => 1 });
   my $tomorrow_doc = read_json_file($tomorrow_path, { silent => 1 });
+  
+  # FIX: If today's data is missing, try fallback to tariffs_latest.json
+  # This ensures relative values can be computed even if tariffs_today.json is missing
+  if (!$today_doc && -f $latest_path) {
+    eval { LOGWARN("tariffs_today.json missing or invalid, using tariffs_latest.json as fallback"); 1; };
+    $today_doc = read_json_file($latest_path, { silent => 1 });
+    if ($today_doc) {
+      eval { LOGINF("Successfully loaded today's data from tariffs_latest.json"); 1; };
+    } else {
+      eval { LOGWARN("Failed to load fallback tariffs_latest.json"); 1; };
+    }
+  }
+  
+  # FIX: Validate we have at least today's data for relative calculations
+  if (!$today_doc) {
+    eval { LOGERR("CRITICAL: No valid today data found for relative calculations!"); 1; };
+  }
   
   return ($today_doc, $tomorrow_doc);
 }
@@ -472,13 +490,36 @@ sub _add_blocks_to_map {
 my %hour_epoch_map_rel;
 my @hour_epochs_sorted_rel;
 
-# Add today's data
-_add_blocks_to_map($today_doc, \%hour_epoch_map_rel);
+# FIX: Validate today's data exists before building relative map
+# This prevents 0 values in relative offsets when today's data is missing
+if (!$today_doc || !$today_doc->{rows} || !@{$today_doc->{rows}}) {
+  eval { LOGERR("Cannot build relative values: today's tariff data is missing or empty"); 1; };
+} else {
+  # Add today's data (CRITICAL - must have this)
+  _add_blocks_to_map($today_doc, \%hour_epoch_map_rel);
+  eval { 
+    my $count = scalar keys %hour_epoch_map_rel;
+    LOGINF("Added $count hours from today's data to relative map"); 
+    1; 
+  };
+}
 
-# Add tomorrow's data
-_add_blocks_to_map($tomorrow_doc, \%hour_epoch_map_rel);
+# Add tomorrow's data (optional, improves forward-looking offsets)
+if ($tomorrow_doc && $tomorrow_doc->{rows}) {
+  _add_blocks_to_map($tomorrow_doc, \%hour_epoch_map_rel);
+  eval { 
+    my $count = scalar keys %hour_epoch_map_rel;
+    LOGINF("Total $count hours in relative map after adding tomorrow's data"); 
+    1; 
+  };
+}
 
 @hour_epochs_sorted_rel = sort { $a <=> $b } keys %hour_epoch_map_rel;
+
+# FIX: Verify we have data before computing relative values
+if (@hour_epochs_sorted_rel == 0) {
+  eval { LOGERR("CRITICAL: hour_epoch_map_rel is empty after adding data!"); 1; };
+}
 
 sub _latest_value_before_or_at_rel {
   my ($epoch) = @_;
