@@ -348,10 +348,6 @@ sub publish_mqtt {
 
   return $ok;
 }
-  }
-
-  return $ok;
-}
 
 # --------------------------
 # Misc helpers
