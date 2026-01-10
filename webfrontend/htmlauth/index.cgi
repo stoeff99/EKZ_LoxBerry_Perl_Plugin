@@ -2,7 +2,7 @@
 use strict;
 use warnings;
 
-use CGI:: Carp qw(fatalsToBrowser warningsToBrowser);
+use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI;
 
 my $q = CGI->new;
@@ -22,7 +22,7 @@ my $SAFE_BASEURL = CGI:: escapeHTML($BASEURL);
 
 # HTML head and body up to the <script> tag (interpolate variables)
 print <<"HTML_HEAD";
-<! doctype html>
+<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
