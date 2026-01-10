@@ -197,7 +197,7 @@ sub _ensure_dir {
   my ($dir) = @_;
   return if -d $dir;
   require File::Path;
-  File:: Path::make_path($dir);
+  File::Path::make_path($dir);
 }
 
 sub _cleanup_old_files {
@@ -250,7 +250,7 @@ sub save_raw_payload {
   _ensure_dir($raw_dir);
   my $ts = strftime('%Y%m%d-%H%M%S', localtime);
   my $fn = sprintf('%s_%s_%s.json', $label, $ts, $rid);
-  my $path = File:: Spec->catfile($raw_dir, $fn);
+  my $path = File::Spec->catfile($raw_dir, $fn);
   if (open my $fh, '>', $path) {
     print $fh JSON::PP->new->pretty(1)->encode($payload);
     close $fh;
@@ -270,7 +270,7 @@ sub save_fetch_record {
   # Wrap entire operation in eval to ensure it never breaks the main fetch
   eval {
     # Create fetch_records directory if it doesn't exist
-    my $records_dir = File:: Spec->catdir($lbpdatadir, 'fetch_records');
+    my $records_dir = File::Spec->catdir($lbpdatadir, 'fetch_records');
     unless (-d $records_dir) {
       _ensure_dir($records_dir);
       chmod 0750, $records_dir;
@@ -286,7 +286,7 @@ sub save_fetch_record {
       my $old_num = sprintf('%02d', $i);
       my $new_num = sprintf('%02d', $i + 1);
       my $old_path = File::Spec->catfile($records_dir, "fetch_record_${old_num}.json");
-      my $new_path = File:: Spec->catfile($records_dir, "fetch_record_${new_num}.json");
+      my $new_path = File::Spec->catfile($records_dir, "fetch_record_${new_num}.json");
       
       if (-f $old_path) {
         rename $old_path, $new_path;
@@ -337,8 +337,8 @@ my $ok = eval {
 
   log_event($cfg, $rid, 'start', {
     schedule    => $schedule,
-    force       => ($force ?  JSON::PP:: true : JSON::PP::false),
-    param_today => ($want_today ? JSON::PP:: true : JSON::PP::false),
+    force       => ($force ?  JSON::PP::true : JSON::PP::false),
+    param_today => ($want_today ? JSON::PP::true : JSON::PP::false),
     grace_minutes => $grace,
   });
 
@@ -524,7 +524,7 @@ my $ok = eval {
         save_raw_payload($cfg, $rid, 'raw_public_fallback', $payload);
         log_event($cfg, $rid, 'fallback_applied', {
           fee_kwh      => $fee_kwh+0,
-          zero_regional => ($zero_reg ? JSON:: PP::true : JSON::PP:: false),
+          zero_regional => ($zero_reg ? JSON::PP::true : JSON::PP::false),
         });
       } else {
         LOGERR("Public fallback tariffs failed; keeping customerTariffs payload.  Error: " . ($@ // 'unknown'));
@@ -601,13 +601,13 @@ my $ok = eval {
 
   # Publish raw payload
   my $mqtt_ok = publish_tariffs_to_mqtt($cfg, $payload, $source, $start_iso, $end_iso);
-  log_event($cfg, $rid, 'publish_raw', { mqtt_ok => ($mqtt_ok ? JSON::PP:: true : JSON::PP::false) });
+  log_event($cfg, $rid, 'publish_raw', { mqtt_ok => ($mqtt_ok ? JSON::PP::true : JSON::PP::false) });
 
   # Trigger compute publishes
   my $compute = File::Spec->catfile($FindBin::Bin, 'compute_costs.cgi');
   my $compute_rc = system('/usr/bin/perl', $compute);
   my $compute_ok = ($compute_rc == 0);
-  log_event($cfg, $rid, 'compute', { ok => ($compute_ok ? JSON:: PP::true : JSON::PP:: false), rc => ($compute_rc >> 8) });
+  log_event($cfg, $rid, 'compute', { ok => ($compute_ok ? JSON::PP::true : JSON::PP::false), rc => ($compute_rc >> 8) });
   LOGINF("compute_costs.cgi invoked to publish intervals/hourly.");
 
   # Response
@@ -653,7 +653,7 @@ my $ok = eval {
     normalized_payload => $norm,
     fallback_applied   => ($fallback_applied ? JSON::PP::true : JSON::PP::false),
     mqtt_published     => ($mqtt_ok ? JSON::PP::true : JSON::PP::false),
-    compute_completed  => ($compute_ok ? JSON:: PP::true : JSON::PP:: false),
+    compute_completed  => ($compute_ok ? JSON::PP::true : JSON::PP::false),
   };
   
   save_fetch_record($fetch_record);
