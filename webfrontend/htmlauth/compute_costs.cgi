@@ -3,7 +3,7 @@ use strict;
 use warnings;
 
 use CGI;
-use CGI::Carp qw(fatalsToBrowser warningsToBrowser);  # show errors in browser
+use CGI:: Carp qw(fatalsToBrowser warningsToBrowser);  # show errors in browser
 use JSON::PP;
 use File::Spec;
 use Time::Local qw(timegm timelocal);
@@ -38,16 +38,17 @@ sub read_latest_json {
 }
 
 sub read_today_and_tomorrow_json {
-  my $today_path = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
+  my $today_path = File::Spec->catfile($lbpdatadir, 'tariffs_today. json');
   my $tomorrow_path = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
   my $latest_path = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
   
+  # FIX: Try to read both 'prices' and 'rows' fields
   my $today_doc = read_json_file($today_path, { silent => 1 });
   my $tomorrow_doc = read_json_file($tomorrow_path, { silent => 1 });
   
-  # FIX: If today's data is missing, try fallback to tariffs_latest.json
+  # FIX: If today's data is missing, try fallback to tariffs_latest. json
   # This ensures relative values can be computed even if tariffs_today.json is missing
-  if (!$today_doc && -f $latest_path) {
+  if (! $today_doc && -f $latest_path) {
     eval { LOGWARN("tariffs_today.json missing or invalid, using tariffs_latest.json as fallback"); 1; };
     $today_doc = read_json_file($latest_path, { silent => 1 });
     if ($today_doc) {
@@ -57,9 +58,9 @@ sub read_today_and_tomorrow_json {
     }
   }
   
-  # FIX: Validate we have at least today's data for relative calculations
+  # FIX:  Validate we have at least today's data for relative calculations
   if (!$today_doc) {
-    eval { LOGERR("CRITICAL: No valid today data found for relative calculations!"); 1; };
+    eval { LOGERR("CRITICAL: No valid today data found for relative calculations! "); 1; };
   }
   
   return ($today_doc, $tomorrow_doc);
@@ -81,7 +82,7 @@ sub get_unit_value {
 }
 
 sub days_in_month {
-  my ($y, $m) = @_; # y=YYYY, m=1..12
+  my ($y, $m) = @_; # y=YYYY, m=1.. 12
   return 31 if $m =~ /^(1|3|5|7|8|10|12)$/;
   return 30 if $m =~ /^(4|6|9|11)$/;
   my $leap = ($y % 400 == 0) || ($y % 4 == 0 && $y % 100 != 0);
@@ -99,7 +100,7 @@ sub hour_start_from {
   my ($date,$time,$off) = $iso =~ /^([^T]+)T([^+\-Z]+)([+\-]\d{2}:\d{2}|Z)?$/;
   $off = '+00:00' if !defined $off || $off eq 'Z';
   my ($Y,$M,$D,$h) = parse_ymdh($iso);
-  return sprintf('%04d-%02d-%02dT%02d:00:00%s', $Y,$M,$D,$h,$off);
+  return sprintf('%04d-%02d-%02dT%02d: 00:00%s', $Y,$M,$D,$h,$off);
 }
 
 # Prefer E+G+R; else I (+R) to avoid double counting
@@ -158,7 +159,7 @@ sub ensure_daily_rotation {
   my $hour = (localtime(time))[2];
   return unless $hour == 0;
   
-  my $marker_file = File::Spec->catfile($lbpdatadir, '.rotated_today');
+  my $marker_file = File::Spec->catfile($lbpdatadir, '. rotated_today');
   my $today_ymd = strftime('%Y-%m-%d', localtime);
   
   # Check if we already rotated today
@@ -171,7 +172,7 @@ sub ensure_daily_rotation {
     }
   }
   
-  # Perform rotation: tomorrow → today
+  # Perform rotation:  tomorrow → today
   my $today_file = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
   my $tomorrow_file = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
   
@@ -188,7 +189,7 @@ sub ensure_daily_rotation {
       # Delete tomorrow file
       unlink $tomorrow_file;
       
-      eval { LOGINF("Daily rotation completed: tomorrow → today at midnight"); 1; };
+      eval { LOGINF("Daily rotation completed:  tomorrow → today at midnight"); 1; };
     }
   }
   
@@ -214,7 +215,7 @@ if ($err) {
 }
 
 my $rows = $doc->{prices};
-$rows = $doc->{rows} if !defined $rows;
+$rows = $doc->{rows} if ! defined $rows;
 $rows ||= [];
 
 my @sorted = sort {
@@ -236,7 +237,7 @@ for my $b (@sorted) {
 
   my $kwh_total      = kwh_total_for_block($b);
   my $monthly_m      = monthly_M_total_for_block($b);
-  my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
+  my $fixed_per_hour = $hours_in_month ?  ($monthly_m / $hours_in_month) : 0;
   my $sum_total      = $kwh_total + $fixed_per_hour;
 
   my $hour_key = hour_start_from($start);
@@ -274,8 +275,6 @@ my $pub_ts = $doc->{publication_timestamp} // '';
 
 # --------------------------
 # Forward-fill absolute outputs (never-null) for MQTT
-# - hourly_filled: 24 entries (local hours)
-# - intervals_filled: 96 entries (local 15m)
 # --------------------------
 
 # Build epoch maps from RAW arrays
@@ -301,18 +300,14 @@ my @q_epochs_sorted_ff = sort { $a <=> $b } keys %q_epoch_map_ff;
 my @lt_now = localtime(time);
 my $midnight_local_epoch = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
 
-# Detect midnight transition: today's midnight is after all available data
-# This happens between 00:00 and ~19:00 when building today's view but only having yesterday's data
-# Log this condition for troubleshooting
+# Detect midnight transition
 if (@hour_epochs_sorted_ff == 0) {
-  # No data at all
-  eval { LOGWARN("Midnight transition: No hourly data available in tariffs_latest.json"); 1; };
+  eval { LOGWARN("Midnight transition:  No hourly data available in tariffs_latest.json"); 1; };
 } elsif ($midnight_local_epoch > $hour_epochs_sorted_ff[-1]) {
-  # Today's midnight is after the last available data timestamp
   my $last_data_time = strftime('%Y-%m-%d %H:%M:%S', localtime($hour_epochs_sorted_ff[-1]));
   my $today_midnight = strftime('%Y-%m-%d %H:%M:%S', localtime($midnight_local_epoch));
   eval { 
-    LOGINF("Midnight transition detected: Building view for $today_midnight but last data is from $last_data_time. Using last available values as carry-forward."); 
+    LOGINF("Midnight transition detected: Building view for $today_midnight but last data is from $last_data_time.  Using last available values as carry-forward. "); 
     1; 
   };
 }
@@ -320,102 +315,99 @@ if (@hour_epochs_sorted_ff == 0) {
 sub _latest_hour_before_or_at {
   my ($epoch) = @_;
   return undef unless defined $epoch;
-  
-  # If no data available, return undef
   return undef unless @hour_epochs_sorted_ff;
   
-  # If requested epoch is at or after the last available data, return the last available
-  # This handles the midnight transition case where we're building today's view with yesterday's data
   if ($epoch >= $hour_epochs_sorted_ff[-1]) {
     return $hour_epoch_map_ff{ $hour_epochs_sorted_ff[-1] };
   }
   
-  # Find the latest data point before or at the requested epoch
   for (my $i = $#hour_epochs_sorted_ff; $i >= 0; $i--) {
     my $e = $hour_epochs_sorted_ff[$i];
     return $hour_epoch_map_ff{$e} if $e <= $epoch;
   }
   
-  # If requested epoch is before all available data, return the first available
-  # (This shouldn't normally happen, but provides a fallback)
   return $hour_epoch_map_ff{ $hour_epochs_sorted_ff[0] };
 }
 
 sub _latest_q_before_or_at {
   my ($epoch) = @_;
   return undef unless defined $epoch;
-  
-  # If no data available, return undef
   return undef unless @q_epochs_sorted_ff;
   
-  # If requested epoch is at or after the last available data, return the last available
-  # This handles the midnight transition case where we're building today's view with yesterday's data
   if ($epoch >= $q_epochs_sorted_ff[-1]) {
     return $q_epoch_map_ff{ $q_epochs_sorted_ff[-1] };
   }
   
-  # Find the latest data point before or at the requested epoch
   for (my $i = $#q_epochs_sorted_ff; $i >= 0; $i--) {
     my $e = $q_epochs_sorted_ff[$i];
     return $q_epoch_map_ff{$e} if $e <= $epoch;
   }
   
-  # If requested epoch is before all available data, return the first available
-  # (This shouldn't normally happen, but provides a fallback)
   return $q_epoch_map_ff{ $q_epochs_sorted_ff[0] };
 }
 
 # Helpers to build local ISO with timezone offset
-sub _local_hour_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:00:00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
-sub _local_q_iso   { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:%M:00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
-sub _local_q_end_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:%M:00', localtime($t+900)); my $z=strftime('%z', localtime($t+900)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
+sub _local_hour_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H: 00:00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
+sub _local_q_iso   { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:%M: 00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
+sub _local_q_end_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:%M: 00', localtime($t+900)); my $z=strftime('%z', localtime($t+900)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
 
-# Build filled hourly (24) and intervals (96) arrays for MQTT
+# --------------------------
+# FIX:  Build filled hourly and intervals arrays for BOTH today and tomorrow (48 hours)
+# This allows the JavaScript day navigation to work properly
+# --------------------------
 my @hourly_filled;
-for my $h_off (0..23) {
-  my $t  = $midnight_local_epoch + $h_off * 3600;
-  my $is = _local_hour_iso($t);
-  my $ke = _iso_to_epoch($is);
-  my $k  = defined $ke ? int($ke/3600)*3600 : undef;
+for my $day_offset (0..1) {  # 0 = today, 1 = tomorrow
+  my $day_midnight_epoch = $midnight_local_epoch + ($day_offset * 86400);  # 86400 = seconds in a day
+  
+  for my $h_off (0..23) {
+    my $t  = $day_midnight_epoch + $h_off * 3600;
+    my $is = _local_hour_iso($t);
+    my $ke = _iso_to_epoch($is);
+    my $k  = defined $ke ? int($ke/3600)*3600 : undef;
 
-  my $src = (defined $k && exists $hour_epoch_map_ff{$k}) ? $hour_epoch_map_ff{$k} : _latest_hour_before_or_at($ke);
-  my $avg_total = (defined $src && defined $src->{avg_total_chf}) ? 0 + $src->{avg_total_chf} : 0;
-  my $avg_kwh   = (defined $src && defined $src->{avg_chf_per_kwh_sum}) ? 0 + $src->{avg_chf_per_kwh_sum} : 0;
-  my $avg_m     = (defined $src && defined $src->{avg_chf_m_per_hour}) ? 0 + $src->{avg_chf_m_per_hour} : 0;
-  my $n_int     = (defined $src && defined $src->{intervals_count}) ? 0 + $src->{intervals_count} : 0;
+    my $src = (defined $k && exists $hour_epoch_map_ff{$k}) ? $hour_epoch_map_ff{$k} : _latest_hour_before_or_at($ke);
+    my $avg_total = (defined $src && defined $src->{avg_total_chf}) ? 0 + $src->{avg_total_chf} : 0;
+    my $avg_kwh   = (defined $src && defined $src->{avg_chf_per_kwh_sum}) ? 0 + $src->{avg_chf_per_kwh_sum} : 0;
+    my $avg_m     = (defined $src && defined $src->{avg_chf_m_per_hour}) ? 0 + $src->{avg_chf_m_per_hour} : 0;
+    my $n_int     = (defined $src && defined $src->{intervals_count}) ? 0 + $src->{intervals_count} : 0;
 
-  push @hourly_filled, {
-    hour_start          => $is,        # local hour with offset
-    avg_total_chf       => $avg_total, # never null
-    avg_chf_per_kwh_sum => $avg_kwh,
-    avg_chf_m_per_hour  => $avg_m,
-    intervals_count     => $n_int,
-  };
+    push @hourly_filled, {
+      hour_start          => $is,
+      avg_total_chf       => $avg_total,
+      avg_chf_per_kwh_sum => $avg_kwh,
+      avg_chf_m_per_hour  => $avg_m,
+      intervals_count     => $n_int,
+    };
+  }
 }
 
 my @intervals_filled;
-for my $q_off (0..95) {
-  my $t  = $midnight_local_epoch + $q_off * 900;
-  my $is = _local_q_iso($t);
-  my $ie = _local_q_end_iso($t);
-  my $ke = _iso_to_epoch($is);
-  my $k  = defined $ke ? int($ke/900)*900 : undef;
+for my $day_offset (0..1) {  # 0 = today, 1 = tomorrow
+  my $day_midnight_epoch = $midnight_local_epoch + ($day_offset * 86400);
+  
+  for my $q_off (0..95) {
+    my $t  = $day_midnight_epoch + $q_off * 900;
+    my $is = _local_q_iso($t);
+    my $ie = _local_q_end_iso($t);
+    my $ke = _iso_to_epoch($is);
+    my $k  = defined $ke ? int($ke/900)*900 : undef;
 
-  my $src = (defined $k && exists $q_epoch_map_ff{$k}) ? $q_epoch_map_ff{$k} : _latest_q_before_or_at($ke);
+    my $src = (defined $k && exists $q_epoch_map_ff{$k}) ? $q_epoch_map_ff{$k} : _latest_q_before_or_at($ke);
 
-  my $tot      = (defined $src && defined $src->{total_chf}) ? 0 + $src->{total_chf} : 0;
-  my $sum_kwh  = (defined $src && defined $src->{chf_per_kwh_sum}) ? 0 + $src->{chf_per_kwh_sum} : 0;
-  my $m_per_h  = (defined $src && defined $src->{chf_m_per_hour}) ? 0 + $src->{chf_m_per_hour} : 0;
-  my $mh_used  = (defined $src && defined $src->{month_hours_used}) ? 0 + $src->{month_hours_used} : 0;
+    my $tot      = (defined $src && defined $src->{total_chf}) ? 0 + $src->{total_chf} : 0;
+    my $sum_kwh  = (defined $src && defined $src->{chf_per_kwh_sum}) ? 0 + $src->{chf_per_kwh_sum} : 0;
+    my $m_per_h  = (defined $src && defined $src->{chf_m_per_hour}) ? 0 + $src->{chf_m_per_hour} : 0;
+    my $mh_used  = (defined $src && defined $src->{month_hours_used}) ? 0 + $src->{month_hours_used} : 0;
 
-  push @intervals_filled, {
-    start_timestamp  => $is,    # local 15m start with offset
-    end_timestamp    => $ie,    # local 15m end with offset
-    chf_per_kwh_sum  => $sum_kwh,
-    chf_m_per_hour   => $m_per_h,
-    total_chf        => $tot,   # never null
-    month_hours_used => $mh_used,
-  };
+    push @intervals_filled, {
+      start_timestamp  => $is,
+      end_timestamp    => $ie,
+      chf_per_kwh_sum  => $sum_kwh,
+      chf_m_per_hour   => $m_per_h,
+      total_chf        => $tot,
+      month_hours_used => $mh_used,
+    };
+  }
 }
 
 # --------------------------
@@ -441,12 +433,16 @@ my $json_hourly    = JSON::PP->new->canonical(1)->encode($hourly_msg);
 my ($today_doc, $tomorrow_doc) = read_today_and_tomorrow_json();
 
 # Helper function to add blocks to hour epoch map
-# Accumulates all 15-minute intervals per hour, then calculates averages
 sub _add_blocks_to_map {
   my ($doc, $map_ref) = @_;
-  return unless $doc && ref($doc->{rows}) eq 'ARRAY';
+  return unless $doc;
   
+  # FIX: Check for both 'rows' and 'prices' fields (same as main code)
   my $rows = $doc->{rows};
+  $rows = $doc->{prices} if !defined $rows;
+  
+  return unless $rows && ref($rows) eq 'ARRAY';
+  
   for my $b (@$rows) {
     my $start = $b->{start_timestamp} // next;
     my $hour_key = hour_start_from($start);
@@ -454,7 +450,6 @@ sub _add_blocks_to_map {
     next unless defined $e;
     my $k = int($e/3600)*3600;
     
-    # Initialize accumulator if not exists
     unless (exists $map_ref->{$k}) {
       $map_ref->{$k} = {
         hour_start => $hour_key,
@@ -463,24 +458,21 @@ sub _add_blocks_to_map {
       };
     }
     
-    # Accumulate all intervals for this hour (same logic as main aggregation)
     my ($Y,$M) = (parse_ymdh($start))[0,1];
     my $hours_in_month = days_in_month($Y,$M) * 24;
     my $kwh_total = kwh_total_for_block($b);
     my $monthly_m = monthly_M_total_for_block($b);
-    my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
+    my $fixed_per_hour = $hours_in_month ?  ($monthly_m / $hours_in_month) : 0;
     my $sum_total = $kwh_total + $fixed_per_hour;
     
     $map_ref->{$k}{n} += 1;
     $map_ref->{$k}{total_sum} += $sum_total;
   }
   
-  # Calculate averages after accumulating all intervals
   for my $k (keys %$map_ref) {
     my $entry = $map_ref->{$k};
-    my $n = $entry->{n} || 1;  # Fallback to 1 matches main aggregation logic (line 263)
+    my $n = $entry->{n} || 1;
     $entry->{avg_total_chf} = $entry->{total_sum} / $n;
-    # Clean up intermediate accumulation fields (not needed in final output)
     delete $entry->{n};
     delete $entry->{total_sum};
   }
@@ -490,12 +482,10 @@ sub _add_blocks_to_map {
 my %hour_epoch_map_rel;
 my @hour_epochs_sorted_rel;
 
-# FIX: Validate today's data exists before building relative map
-# This prevents 0 values in relative offsets when today's data is missing
-if (!$today_doc || !$today_doc->{rows} || !@{$today_doc->{rows}}) {
-  eval { LOGERR("Cannot build relative values: today's tariff data is missing or empty"); 1; };
+# Add today's data
+if (! $today_doc) {
+  eval { LOGERR("Cannot build relative values:  today's tariff data is missing"); 1; };
 } else {
-  # Add today's data (CRITICAL - must have this)
   _add_blocks_to_map($today_doc, \%hour_epoch_map_rel);
   eval { 
     my $count = scalar keys %hour_epoch_map_rel;
@@ -504,8 +494,8 @@ if (!$today_doc || !$today_doc->{rows} || !@{$today_doc->{rows}}) {
   };
 }
 
-# Add tomorrow's data (optional, improves forward-looking offsets)
-if ($tomorrow_doc && $tomorrow_doc->{rows}) {
+# Add tomorrow's data
+if ($tomorrow_doc) {
   _add_blocks_to_map($tomorrow_doc, \%hour_epoch_map_rel);
   eval { 
     my $count = scalar keys %hour_epoch_map_rel;
@@ -516,16 +506,14 @@ if ($tomorrow_doc && $tomorrow_doc->{rows}) {
 
 @hour_epochs_sorted_rel = sort { $a <=> $b } keys %hour_epoch_map_rel;
 
-# FIX: Verify we have data before computing relative values
 if (@hour_epochs_sorted_rel == 0) {
-  eval { LOGERR("CRITICAL: hour_epoch_map_rel is empty after adding data!"); 1; };
+  eval { LOGERR("CRITICAL: hour_epoch_map_rel is empty after adding data! "); 1; };
 }
 
 sub _latest_value_before_or_at_rel {
   my ($epoch) = @_;
   return (undef, undef) unless defined $epoch;
   
-  # First, try exact match - round to hour boundary
   my $k = int($epoch/3600)*3600;
   if (exists $hour_epoch_map_rel{$k}) {
     my $h = $hour_epoch_map_rel{$k};
@@ -533,7 +521,6 @@ sub _latest_value_before_or_at_rel {
     return ($v, $h->{hour_start});
   }
   
-  # If no exact match, fall back to latest before
   return (0 + ($hour_epoch_map_rel{$hour_epochs_sorted_rel[-1]}{avg_total_chf} // 0),
           $hour_epoch_map_rel{$hour_epochs_sorted_rel[-1]}{hour_start})
     if @hour_epochs_sorted_rel && $epoch >= $hour_epochs_sorted_rel[-1];
@@ -541,7 +528,7 @@ sub _latest_value_before_or_at_rel {
     my $e = $hour_epochs_sorted_rel[$i];
     if ($e < $epoch) {
       my $h = $hour_epoch_map_rel{$e};
-      my $v = defined $h->{avg_total_chf} ? 0 + $h->{avg_total_chf} : 0;
+      my $v = defined $h->{avg_total_chf} ?  0 + $h->{avg_total_chf} :  0;
       return ($v, $h->{hour_start});
     }
   }
@@ -550,21 +537,17 @@ sub _latest_value_before_or_at_rel {
 
 my @relative;
 for my $off (0..23) {
-  # Get current time, round to nearest hour considering the 58-minute threshold
   my $now = time;
   my $current_hour_epoch = int($now / 3600) * 3600;
   my $minutes_into_hour = int(($now - $current_hour_epoch) / 60);
   
-  # If at minute 58 or 59, round up to next hour for the "now" reference point
-  # This ensures relative offset 0 shows the upcoming hour's price
   if ($minutes_into_hour >= $HOUR_ROUNDING_THRESHOLD_MIN) {
     $current_hour_epoch += 3600;
   }
   
   my $t = $current_hour_epoch + $off * 3600;
 
-  # Local ISO for this hour (+ offset like +01:00 or +02:00)
-  my $hs_local = strftime('%Y-%m-%dT%H:00:00', localtime($t));
+  my $hs_local = strftime('%Y-%m-%dT%H: 00:00', localtime($t));
   my $offstr = strftime('%z', localtime($t)); $offstr =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
   my $hs_iso_local = $hs_local . $offstr;
   
@@ -576,7 +559,7 @@ for my $off (0..23) {
 
   push @relative, {
     offset        => $off,
-    hour_start    => $hs_iso_local,   # local hour with offset
+    hour_start    => $hs_iso_local,
     avg_total_chf => $val,
   };
 }
@@ -589,7 +572,7 @@ my $relative_msg = {
 my $json_relative = JSON::PP->new->canonical(1)->encode($relative_msg);
 
 # --------------------------
-# MQTT publish (topics unchanged)
+# MQTT publish
 # --------------------------
 my $topic_intervals = $cfg->{mqtt_topic_intervals}
                    // $cfg->{mqtt_topic_raw}
@@ -601,34 +584,27 @@ my $topic_relative  = $cfg->{mqtt_topic_relative} // 'ekz/ems/tariffs/relative';
 
 my ($pub_intervals_ok, $pub_hourly_ok) = (0, 0);
 my $pub_relative_ok = 0;
-if (!$nopublish) {
-  # Replace time-based absolute publish lockout with data-freshness check
-  # Publish if the data's window overlaps with today
+if (! $nopublish) {
   my @lt_now = localtime(time);
   my $today_start = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
   my $today_end = $today_start + $WINDOW_END_OFFSET_SEC;
   
   my $allow_absolute_publish = 0;
   
-  # Check if we have data and if it overlaps with today
   if (@sorted > 0) {
     my $first_start = _iso_to_epoch($sorted[0]{start_timestamp});
     my $last_end = _iso_to_epoch($sorted[-1]{end_timestamp});
     
     if (defined $first_start && defined $last_end) {
-      # Data overlaps with today if:
-      # - data starts before today ends AND
-      # - data ends after today starts
       my $data_is_for_today = ($first_start < $today_end) && ($last_end >= $today_start);
       $allow_absolute_publish = $data_is_for_today;
     }
   }
   
   if ($allow_absolute_publish) {
-    $pub_intervals_ok = publish_mqtt($cfg, $topic_intervals, $json_intervals, { retain => 1, pre_encoded => 1 }) ? 1 : 0;
+    $pub_intervals_ok = publish_mqtt($cfg, $topic_intervals, $json_intervals, { retain => 1, pre_encoded => 1 }) ?  1 : 0;
     $pub_hourly_ok    = publish_mqtt($cfg, $topic_hourly,    $json_hourly,    { retain => 1, pre_encoded => 1 }) ? 1 : 0;
   }
-  # Relative can always be published for rolling 24h view
   $pub_relative_ok  = publish_mqtt($cfg, $topic_relative,  $json_relative,  { retain => 1, pre_encoded => 1 }) ? 1 : 0;
 }
 
@@ -657,7 +633,7 @@ sub _line {
     my $v = $fields_hashref->{$k};
     push @fields, "$kk=$v";
   }
-  return join(',', $m, (scalar(@tags) ? join(',', @tags) :())) . ' ' . join(',', @fields) . ' ' . int($epoch_s) . '000000000';
+  return join(',', $m, (scalar(@tags) ? join(',', @tags) :())) . ' ' . join(',', @fields) . ' ' . int($epoch_s) .  '000000000';
 }
 
 sub influx_write_lines {
@@ -676,7 +652,7 @@ sub influx_write_lines {
     my $bucket = $cfg->{influx_bucket} // '';
     my $token  = $cfg->{influx_token}  // '';
     unless ($base && $org && $bucket && $token) {
-      eval { LOGERR("Influx v2 missing config: url/org/bucket/token required"); 1; };
+      eval { LOGERR("Influx v2 missing config:  url/org/bucket/token required"); 1; };
       return 0;
     }
     $url = "$base/api/v2/write?org=$org&bucket=$bucket&precision=" . ($precision // 'ns');
@@ -712,7 +688,6 @@ if ($cfg->{influx_enabled}) {
   my $source = $doc->{source} // 'unknown';
   my $ems    = $cfg->{ems_instance_id} // '';
 
-  # Intervals (RAW, not forward-filled)
   for my $it (@intervals_raw) {
     my $t = _iso_to_epoch($it->{start_timestamp}); next unless defined $t;
     my %tags = ( source => $source, ems => $ems );
@@ -725,7 +700,6 @@ if ($cfg->{influx_enabled}) {
     push @influx_lines, _line('ekz_tariff_intervals', \%tags, \%fields, $t);
   }
 
-  # Hourly (RAW, not forward-filled)
   for my $h (@hourly_raw) {
     next unless ref $h eq 'HASH' && defined $h->{hour_start};
     my $t = _iso_to_epoch($h->{hour_start}); next unless defined $t;
@@ -743,7 +717,7 @@ if ($cfg->{influx_enabled}) {
 }
 
 # --------------------------
-# Final output (debug/info)
+# Final output
 # --------------------------
 my $out = {
   source_file             => $src_path,
@@ -751,19 +725,19 @@ my $out = {
   interval_count_input    => scalar(@sorted),
   interval_count_output   => scalar(@intervals_filled),
   hour_count_output       => scalar(@hourly_filled),
-  intervals               => \@intervals_filled, # filled view mirrors what MQTT publishes
-  hourly                  => \@hourly_filled,    # filled view mirrors what MQTT publishes
+  intervals               => \@intervals_filled,
+  hourly                  => \@hourly_filled,
   mqtt => {
     enabled                  => !!($cfg->{mqtt_enabled}),
     intervals_topic          => $topic_intervals,
     hourly_topic             => $topic_hourly,
-    publish_intervals_ok     => $pub_intervals_ok ? JSON::PP::true : JSON::PP::false,
+    publish_intervals_ok     => $pub_intervals_ok ?  JSON::PP:: true : JSON::PP::false,
     publish_hourly_ok        => $pub_hourly_ok    ? JSON::PP::true : JSON::PP::false,
-    skipped_due_to_nopublish => $nopublish ? JSON::PP::true : JSON::PP::false,
+    skipped_due_to_nopublish => $nopublish ?  JSON::PP::true : JSON:: PP::false,
     relative_topic           => $topic_relative,
-    publish_relative_ok      => $pub_relative_ok ? JSON::PP::true : JSON::PP::false,
+    publish_relative_ok      => $pub_relative_ok ?  JSON::PP::true : JSON:: PP::false,
   },
-  influx_written          => ($influx_ok ? JSON::PP::true : JSON::PP::false),
+  influx_written          => ($influx_ok ?  JSON::PP::true : JSON:: PP::false),
 };
 
 print JSON::PP->new->pretty(1)->encode($out);
