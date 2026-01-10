@@ -31,13 +31,13 @@ my $log = LoxBerry::Log->new(
 LOGSTART("run_rolling_fetch started");
 
 # --------------------------
-# Helpers:  normalization
+# Helpers:   normalization
 # --------------------------
 sub _norm_unit_name {
   my ($u) = @_;
   return 'CHF_kWh' if defined $u && lc($u) eq 'chf_kwh';
   return 'CHF_M'   if defined $u && lc($u) eq 'chf_m';
-  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]?kwh$/;
+  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]? kwh$/;
   return 'CHF_M'   if defined $u && lc($u) =~ /^chf[_-]?m$/;
   return $u // 'CHF_kWh';
 }
@@ -105,7 +105,7 @@ sub normalize_prices_doc {
 }
 
 # --------------------------
-# Helpers: values and fallback checks
+# Helpers:  values and fallback checks
 # --------------------------
 sub _value_for_unit {
   my ($arr, $unit) = @_;
@@ -281,7 +281,7 @@ sub save_fetch_record {
     my $oldest_file = File::Spec->catfile($records_dir, 'fetch_record_09.json');
     unlink $oldest_file if -f $oldest_file;
     
-    # Rotate files 08→09, 07→08, ..., 00→01
+    # Rotate files 08→09, 07→08, .. ., 00→01
     for (my $i = 8; $i >= 0; $i--) {
       my $old_num = sprintf('%02d', $i);
       my $new_num = sprintf('%02d', $i + 1);
@@ -337,7 +337,7 @@ my $ok = eval {
 
   log_event($cfg, $rid, 'start', {
     schedule    => $schedule,
-    force       => ($force ?  JSON::PP::true : JSON::PP::false),
+    force       => ($force ?  JSON::PP::true :  JSON::PP::false),
     param_today => ($want_today ? JSON::PP::true : JSON::PP::false),
     grace_minutes => $grace,
   });
@@ -404,7 +404,7 @@ my $ok = eval {
           chmod 0640, $today_file;
           LOGINF("Rotated tariffs_tomorrow.json -> tariffs_today.json at midnight");
         } else {
-          LOGWARN("Failed to write to $today_file during rotation: $!");
+          LOGWARN("Failed to write to $today_file during rotation:  $!");
         }
       } else {
         LOGWARN("Failed to read $tomorrow_file during rotation: $!");
