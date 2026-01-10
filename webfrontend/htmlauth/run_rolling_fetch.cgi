@@ -118,7 +118,7 @@ sub normalize_prices_doc {
   %doc = (
     publication_timestamp => $pub,
     prices                => \@out,   # keep original key
-    rows                  => \@out,   # add rows for compute_costs. cgi compatibility
+    rows                  => \@out,   # add rows for compute_costs.cgi compatibility
   );
   return \%doc;
 }
@@ -582,7 +582,7 @@ my $ok = eval {
   # Write to appropriate file based on window kind
   my $target_file;
   if ($want_today) {
-    $target_file = File::Spec->catfile($lbpdatadir, 'tariffs_today. json');
+    $target_file = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
     LOGINF("Saving TODAY data to tariffs_today.json");
   } else {
     $target_file = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
@@ -683,7 +683,7 @@ my $ok = eval {
 if (! $ok) {
   my $err = $@ // 'Unknown exception';
   eval {
-    my $logfile = File::Spec->catfile($lbpdatadir, 'fetch. log');
+    my $logfile = File::Spec->catfile($lbpdatadir, 'fetch.log');
     if (open my $fh, '>>', $logfile) {
       print $fh scalar(localtime) . " - run_rolling_fetch CGI died: $err\n";
       close $fh;
