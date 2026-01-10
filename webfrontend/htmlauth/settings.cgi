@@ -117,18 +117,14 @@ if ($q->request_method eq 'POST') {
     $cfg->{influx_password} = $pw if defined $pw && $pw ne '';
   }
 
-  # Write updated JSON
-  if (open my $fh, '>', $cfgfile) {
-    print $fh encode_json($cfg);
-    close $fh;
-    chmod 0640, $cfgfile;
-
+  # Write updated JSON using centralized function
+  if (write_json_file($cfgfile, $cfg, { mode => 0640 })) {
     # Update cron wrappers. Pass the whole cfg hashref so update_cron_schedule can manage compute wrapper too.
     my $ok = update_cron_schedule($cfg);
     $msg = $ok ? "<div class='alert alert-ok'>Settings saved. Cron schedule updated.</div>"
                : "<div class='alert alert-warn'>Settings saved but cron update failed. Check permissions.</div>";
   } else {
-    $msg = "<div class='alert alert-err'>Cannot write " . h($cfgfile) . ": " . h($!) . "</div>";
+    $msg = "<div class='alert alert-err'>Cannot write " . h($cfgfile) . "</div>";
   }
 
   # Refresh escaped values and helpers after save so the form shows new values
