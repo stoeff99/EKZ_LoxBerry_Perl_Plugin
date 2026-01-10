@@ -28,7 +28,8 @@ my $nopublish = ($q->param('nopublish') // '') ne '' ? 1 : 0;
 # ---- helpers ----
 
 sub read_latest_json {
-  my $path = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
+  # CHANGE: Read tariffs_today.json instead of tariffs_latest.json
+  my $path = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
   my ($doc, $err) = read_json_file_with_error($path);
   return ($path, $doc, $err);
 }
