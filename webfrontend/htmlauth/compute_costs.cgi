@@ -180,46 +180,55 @@ sub ensure_daily_rotation {
   }
 }
 
-## ---- main ----
+# ---- main ----
 
 my $cfg = eval { load_cfg() } // {};
 
-# Ensure rotation happened if we're in hour 0
-ensure_daily_rotation($cfg);
-
-# FIX: Read today's data (this is for the source_path reference)
 my ($src_path, $doc, $err) = read_latest_json();
 if ($err) {
   print JSON::PP->new->encode($err);
   exit 0;
 }
 
-# FIX: Read tomorrow's data if available
+# FIX: Also read tomorrow's data and merge it
 my $tomorrow_file = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
-my $doc_tomorrow = read_json_file($tomorrow_file, { silent => 1 });
+my $doc_tomorrow;
+if (-f $tomorrow_file) {
+  if (open my $fh, '<', $tomorrow_file) {
+    local $/ = undef;
+    my $raw = <$fh>;
+    close $fh;
+    $doc_tomorrow = eval { JSON::PP->new->decode($raw) };
+    if ($@) {
+      eval { LOGWARN("Failed to parse tariffs_tomorrow.json: $@"); 1; };
+    } else {
+      eval { LOGINF("Successfully loaded tariffs_tomorrow.json"); 1; };
+    }
+  }
+}
 
-# Merge rows from both files
 my $rows = $doc->{prices};
 $rows = $doc->{rows} if ! defined $rows;
 $rows ||= [];
 
+# FIX: Merge tomorrow's data if available
 my @all_rows = @$rows;
-
-# Add tomorrow's data if available
 if ($doc_tomorrow) {
   my $tomorrow_rows = $doc_tomorrow->{prices};
   $tomorrow_rows = $doc_tomorrow->{rows} if !defined $tomorrow_rows;
   if ($tomorrow_rows && ref($tomorrow_rows) eq 'ARRAY') {
     push @all_rows, @$tomorrow_rows;
-    eval { LOGINF("Merged " .  scalar(@$tomorrow_rows) . " rows from tomorrow's data"); 1; };
+    eval { LOGINF("Merged " . scalar(@$tomorrow_rows) . " rows from tomorrow"); 1; };
   }
 }
+
+eval { LOGINF("Total rows before sort: " . scalar(@all_rows)); 1; };
 
 my @sorted = sort {
   ($a->{start_timestamp} // '') cmp ($b->{start_timestamp} // '')
 } grep { ref $_ eq 'HASH' && $_->{start_timestamp} } @all_rows;
 
-eval { LOGINF("Total sorted rows for processing: " . scalar(@sorted)); 1; };
+eval { LOGINF("Total sorted rows: " . scalar(@sorted)); 1; };
 
 # --------------------------
 # Build raw intervals and hourly aggregates
@@ -350,7 +359,7 @@ my @hourly_filled;
 for my $day_offset (0..1) {
   my $day_midnight_epoch = $midnight_local_epoch + ($day_offset * 86400);
   
-  for my $h_off (0..23) {
+  for my $h_off (0..47) {  # 48 hours = today + tomorrow
     my $t = $day_midnight_epoch + $h_off * 3600;
     my $is = _local_hour_iso($t);
     my $ke = _iso_to_epoch($is);
@@ -376,7 +385,7 @@ my @intervals_filled;
 for my $day_offset (0..1) {
   my $day_midnight_epoch = $midnight_local_epoch + ($day_offset * 86400);
   
-  for my $q_off (0..95) {
+  for my $q_off (0..191) {  # 192 = 48 hours * 4 intervals/hour
     my $t = $day_midnight_epoch + $q_off * 900;
     my $is = _local_q_iso($t);
     my $ie = _local_q_end_iso($t);
