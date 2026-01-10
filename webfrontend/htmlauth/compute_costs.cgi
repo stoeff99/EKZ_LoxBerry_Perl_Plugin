@@ -13,6 +13,12 @@ use LoxBerry::System;
 use LWP::UserAgent;  # for Influx HTTP writes
 require "$FindBin::Bin/common.pl";
 
+# Import constants from common.pl
+our (
+  $WINDOW_END_OFFSET_SEC,
+  $HOUR_ROUNDING_THRESHOLD_MIN,
+);
+
 # SDK globals
 our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
