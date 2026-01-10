@@ -763,11 +763,11 @@ my $out = {
     hourly_topic             => $topic_hourly,
     publish_intervals_ok     => $pub_intervals_ok ?  JSON::PP::true : JSON::PP::false,
     publish_hourly_ok        => $pub_hourly_ok    ? JSON::PP::true : JSON::PP::false,
-    skipped_due_to_nopublish => $nopublish ?  JSON::PP::true : JSON:: PP::false,
+    skipped_due_to_nopublish => $nopublish ?  JSON::PP::true : JSON::PP::false,
     relative_topic           => $topic_relative,
-    publish_relative_ok      => $pub_relative_ok ?  JSON::PP::true : JSON:: PP::false,
+    publish_relative_ok      => $pub_relative_ok ?  JSON::PP::true : JSON::PP::false,
   },
-  influx_written          => ($influx_ok ?  JSON::PP::true : JSON:: PP::false),
+  influx_written          => ($influx_ok ?  JSON::PP::true : JSON::PP::false),
 };
 
 print JSON::PP->new->pretty(1)->encode($out);
