@@ -27,17 +27,10 @@ my $nopublish = ($q->param('nopublish') // '') ne '' ? 1 : 0;
 
 # ---- helpers ----
 
-sub read_latest_json {
-  # CHANGE: Read tariffs_today.json instead of tariffs_latest.json
-  my $path = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
-  my ($doc, $err) = read_json_file_with_error($path);
-  return ($path, $doc, $err);
-}
-
 sub read_today_and_tomorrow_json {
-  my $today_path = File::Spec->catfile($lbpdatadir, 'tariffs_today. json');
+  my $today_path = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
   my $tomorrow_path = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
-  my $latest_path = File::Spec->catfile($lbpdatadir, 'tariffs_latest. json');
+  my $latest_path = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
   
   my $today_doc = read_json_file($today_path, { silent => 1 });
   my $tomorrow_doc = read_json_file($tomorrow_path, { silent => 1 });
@@ -51,7 +44,7 @@ sub read_today_and_tomorrow_json {
   }
   
   if (!$today_doc) {
-    eval { LOGERR("CRITICAL: No valid today data found for relative calculations! "); 1; };
+    eval { LOGERR("CRITICAL: No valid today data found for relative calculations!"); 1; };
   }
   
   return ($today_doc, $tomorrow_doc);
@@ -91,7 +84,7 @@ sub hour_start_from {
   my ($date,$time,$off) = $iso =~ /^([^T]+)T([^+\-Z]+)([+\-]\d{2}:\d{2}|Z)?$/;
   $off = '+00:00' if !defined $off || $off eq 'Z';
   my ($Y,$M,$D,$h) = parse_ymdh($iso);
-  return sprintf('%04d-%02d-%02dT%02d: 00:00%s', $Y,$M,$D,$h,$off);
+  return sprintf('%04d-%02d-%02dT%02d:00:00%s', $Y,$M,$D,$h,$off);
 }
 
 sub kwh_total_for_block {
@@ -145,7 +138,7 @@ sub ensure_daily_rotation {
   my $hour = (localtime(time))[2];
   return unless $hour == 0;
   
-  my $marker_file = File::Spec->catfile($lbpdatadir, '. rotated_today');
+  my $marker_file = File::Spec->catfile($lbpdatadir, '.rotated_today');
   my $today_ymd = strftime('%Y-%m-%d', localtime);
   
   if (-f $marker_file) {
@@ -165,12 +158,12 @@ sub ensure_daily_rotation {
     if ($tomorrow_doc) {
       write_json_file($today_file, $tomorrow_doc);
       
-      my $latest_file = File::Spec->catfile($lbpdatadir, 'tariffs_latest. json');
+      my $latest_file = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
       write_json_file($latest_file, $tomorrow_doc);
       
       unlink $tomorrow_file;
       
-      eval { LOGINF("Daily rotation completed:  tomorrow → today at midnight"); 1; };
+      eval { LOGINF("Daily rotation completed: tomorrow → today at midnight"); 1; };
     }
   }
   
@@ -185,51 +178,46 @@ sub ensure_daily_rotation {
 
 my $cfg = eval { load_cfg() } // {};
 
-my ($src_path, $doc, $err) = read_latest_json();
-if ($err) {
-  print JSON::PP->new->encode($err);
+# Read BOTH today and tomorrow data for absolute values
+my ($today_doc, $tomorrow_doc) = read_today_and_tomorrow_json();
+
+# Use today as primary source
+my $doc = $today_doc;
+if (!$doc) {
+  print JSON::PP->new->encode({ error => 'No today tariff data available' });
   exit 0;
 }
 
-# FIX: Also read tomorrow's data and merge it
-my $tomorrow_file = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
-my $doc_tomorrow;
-if (-f $tomorrow_file) {
-  if (open my $fh, '<', $tomorrow_file) {
-    local $/ = undef;
-    my $raw = <$fh>;
-    close $fh;
-    $doc_tomorrow = eval { JSON::PP->new->decode($raw) };
-    if ($@) {
-      eval { LOGWARN("Failed to parse tariffs_tomorrow.json: $@"); 1; };
-    } else {
-      eval { LOGINF("Successfully loaded tariffs_tomorrow.json"); 1; };
-    }
-  }
-}
-
+# Get today's rows
 my $rows = $doc->{prices};
 $rows = $doc->{rows} if ! defined $rows;
 $rows ||= [];
 
-# FIX: Merge tomorrow's data if available
-my @all_rows = @$rows;
-if ($doc_tomorrow) {
-  my $tomorrow_rows = $doc_tomorrow->{prices};
-  $tomorrow_rows = $doc_tomorrow->{rows} if !defined $tomorrow_rows;
+my @sorted = sort {
+  ($a->{start_timestamp} // '') cmp ($b->{start_timestamp} // '')
+} grep { ref $_ eq 'HASH' && $_->{start_timestamp} } @$rows;
+
+# IMPORTANT: Add tomorrow's data if available
+if ($tomorrow_doc) {
+  my $tomorrow_rows = $tomorrow_doc->{prices};
+  $tomorrow_rows = $tomorrow_doc->{rows} if ! defined $tomorrow_rows;
+  
   if ($tomorrow_rows && ref($tomorrow_rows) eq 'ARRAY') {
-    push @all_rows, @$tomorrow_rows;
-    eval { LOGINF("Merged " . scalar(@$tomorrow_rows) . " rows from tomorrow"); 1; };
+    my @tomorrow_sorted = sort {
+      ($a->{start_timestamp} // '') cmp ($b->{start_timestamp} // '')
+    } grep { ref $_ eq 'HASH' && $_->{start_timestamp} } @$tomorrow_rows;
+    
+    # Merge tomorrow's data into sorted array
+    push @sorted, @tomorrow_sorted;
+    
+    eval { LOGINF("Loaded " . scalar(@tomorrow_sorted) . " intervals from tomorrow's data"); 1; };
   }
 }
 
-eval { LOGINF("Total rows before sort: " . scalar(@all_rows)); 1; };
+# Use today's publication timestamp
+my $pub_ts = $doc->{publication_timestamp} // '';
 
-my @sorted = sort {
-  ($a->{start_timestamp} // '') cmp ($b->{start_timestamp} // '')
-} grep { ref $_ eq 'HASH' && $_->{start_timestamp} } @all_rows;
-
-eval { LOGINF("Total sorted rows: " . scalar(@sorted)); 1; };
+eval { LOGINF("Total sorted intervals: " . scalar(@sorted)); 1; };
 
 # --------------------------
 # Build raw intervals and hourly aggregates
@@ -246,7 +234,7 @@ for my $b (@sorted) {
 
   my $kwh_total = kwh_total_for_block($b);
   my $monthly_m = monthly_M_total_for_block($b);
-  my $fixed_per_hour = $hours_in_month ?  ($monthly_m / $hours_in_month) : 0;
+  my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
   my $sum_total = $kwh_total + $fixed_per_hour;
 
   my $hour_key = hour_start_from($start);
@@ -310,7 +298,7 @@ my @lt_now = localtime(time);
 my $midnight_local_epoch = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
 
 if (@hour_epochs_sorted_ff == 0) {
-  eval { LOGWARN("Midnight transition:  No hourly data available"); 1; };
+  eval { LOGWARN("Midnight transition: No hourly data available"); 1; };
 } elsif ($midnight_local_epoch > $hour_epochs_sorted_ff[-1]) {
   eval { LOGINF("Midnight transition detected: Using last available values"); 1; };
 }
@@ -349,8 +337,8 @@ sub _latest_q_before_or_at {
   return $q_epoch_map_ff{$q_epochs_sorted_ff[0]};
 }
 
-sub _local_hour_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H: 00:00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
-sub _local_q_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:%M: 00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
+sub _local_hour_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:00:00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
+sub _local_q_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:%M:00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
 sub _local_q_end_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:%M:00', localtime($t+900)); my $z=strftime('%z', localtime($t+900)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
 
 # --------------------------
@@ -441,7 +429,7 @@ sub _add_blocks_to_map {
   $rows = $doc->{rows} if !defined $rows;
   
   unless ($rows && ref($rows) eq 'ARRAY' && @$rows > 0) {
-    eval { LOGWARN("_add_blocks_to_map:  No valid rows/prices array found"); 1; };
+    eval { LOGWARN("_add_blocks_to_map: No valid rows/prices array found"); 1; };
     return;
   }
   
@@ -494,7 +482,7 @@ sub _add_blocks_to_map {
 my %hour_epoch_map_rel;
 
 if (! $today_doc) {
-  eval { LOGERR("Cannot build relative values:  today's tariff data is missing"); 1; };
+  eval { LOGERR("Cannot build relative values: today's tariff data is missing"); 1; };
 } else {
   eval { LOGINF("Loading today's data for relative view"); 1; };
   _add_blocks_to_map($today_doc, \%hour_epoch_map_rel);
@@ -512,7 +500,7 @@ if ($tomorrow_doc) {
 my @hour_epochs_sorted_rel = sort { $a <=> $b } keys %hour_epoch_map_rel;
 
 if (@hour_epochs_sorted_rel == 0) {
-  eval { LOGERR("CRITICAL: hour_epoch_map_rel is EMPTY! Cannot calculate relative values! "); 1; };
+  eval { LOGERR("CRITICAL: hour_epoch_map_rel is EMPTY! Cannot calculate relative values!"); 1; };
 }
 
 sub _latest_value_before_or_at_rel {
@@ -534,7 +522,7 @@ sub _latest_value_before_or_at_rel {
     my $e = $hour_epochs_sorted_rel[$i];
     if ($e < $epoch) {
       my $h = $hour_epoch_map_rel{$e};
-      my $v = defined $h->{avg_total_chf} ?  0 + $h->{avg_total_chf} :  0;
+      my $v = defined $h->{avg_total_chf} ? 0 + $h->{avg_total_chf} : 0;
       return ($v, $h->{hour_start});
     }
   }
@@ -553,10 +541,10 @@ for my $off (0..23) {
   
   my $t = $current_hour_epoch + $off * 3600;
 
-  my $hs_local = strftime('%Y-%m-%dT%H: 00:00', localtime($t));
+  my $hs_local = strftime('%Y-%m-%dT%H:00:00', localtime($t));
   my $offstr = strftime('%z', localtime($t)); 
   $offstr =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
-  my $hs_iso_local = $hs_local .  $offstr;
+  my $hs_iso_local = $hs_local . $offstr;
   
   my $target_epoch = _iso_to_epoch($hs_iso_local);
   
@@ -604,7 +592,7 @@ if (! $nopublish) {
   }
   
   if ($allow_absolute_publish) {
-    $pub_intervals_ok = publish_mqtt($cfg, $topic_intervals, $json_intervals, { retain => 1, pre_encoded => 1 }) ?  1 : 0;
+    $pub_intervals_ok = publish_mqtt($cfg, $topic_intervals, $json_intervals, { retain => 1, pre_encoded => 1 }) ? 1 : 0;
     $pub_hourly_ok = publish_mqtt($cfg, $topic_hourly, $json_hourly, { retain => 1, pre_encoded => 1 }) ? 1 : 0;
   }
   $pub_relative_ok = publish_mqtt($cfg, $topic_relative, $json_relative, { retain => 1, pre_encoded => 1 }) ? 1 : 0;
@@ -635,14 +623,14 @@ sub _line {
     my $v = $fields_hashref->{$k};
     push @fields, "$kk=$v";
   }
-  return join(',', $m, (scalar(@tags) ? join(',', @tags) :())) . ' ' . join(',', @fields) . ' ' . int($epoch_s) .  '000000000';
+    return join(',', $m, (scalar(@tags) ? join(',', @tags) : ())) . ' ' . join(',', @fields) . ' ' . int($epoch_s) . '000000000';
 }
 
 sub influx_write_lines {
   my ($cfg, $lines_ref, $precision) = @_;
   return 1 unless $cfg->{influx_enabled};
 
-  my $version = ($cfg->{influx_version} // '2') .  '';
+  my $version = ($cfg->{influx_version} // '2') . '';
   my $base = $cfg->{influx_url} // '';
   my $ua = LWP::UserAgent->new(timeout => 20);
 
@@ -654,7 +642,7 @@ sub influx_write_lines {
     my $bucket = $cfg->{influx_bucket} // '';
     my $token = $cfg->{influx_token} // '';
     unless ($base && $org && $bucket && $token) {
-      eval { LOGERR("Influx v2 missing config:  url/org/bucket/token required"); 1; };
+      eval { LOGERR("Influx v2 missing config: url/org/bucket/token required"); 1; };
       return 0;
     }
     $url = "$base/api/v2/write?org=$org&bucket=$bucket&precision=" . ($precision // 'ns');
@@ -717,6 +705,7 @@ if ($cfg->{influx_enabled}) {
 # --------------------------
 # Final output
 # --------------------------
+my $src_path = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
 my $out = {
   source_file             => $src_path,
   publication_timestamp   => $pub_ts,
