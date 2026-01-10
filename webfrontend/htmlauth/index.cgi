@@ -233,22 +233,31 @@ print <<'JAVASCRIPT';
   }
 
   function pointsFromReport(mode) {
-    if (! lastReport) return [];
+    if (!lastReport) {
+      console.log('No lastReport data');
+      return [];
+    }
     
     const { start, end } = getStartAndEndOfDay(currentDayOffset);
+    console.log('Filtering for day offset:', currentDayOffset);
+    console.log('Day range:', new Date(start), 'to', new Date(end));
     
     if (mode === 'hourly') {
-      const rows = Array. isArray(lastReport.hourly) ? lastReport.hourly : [];
-      return rows
+      const rows = Array.isArray(lastReport.hourly) ? lastReport.hourly : [];
+      console.log('Raw hourly rows:', rows. length);
+      const filtered = rows
         .map(r => ({ x: r.hour_start, y: Number(r.avg_total_chf || 0), _t: Date.parse(r.hour_start) }))
-        .filter(p => ! isNaN(p._t) && p._t >= start && p._t < end)
-        .map(p => ({ x: p. x, y: p.y }));
+        .filter(p => ! isNaN(p._t) && p._t >= start && p._t < end);
+      console.log('Filtered hourly points:', filtered.length);
+      return filtered. map(p => ({ x: p.x, y: p.y }));
     } else {
       const rows = Array.isArray(lastReport.intervals) ? lastReport.intervals : [];
-      return rows
+      console. log('Raw interval rows:', rows.length);
+      const filtered = rows
         .map(r => ({ x: r. start_timestamp, y: Number(r.total_chf || 0), _t: Date.parse(r. start_timestamp) }))
-        .filter(p => !isNaN(p._t) && p._t >= start && p._t < end)
-        .map(p => ({ x: p.x, y: p.y }));
+        .filter(p => !isNaN(p._t) && p._t >= start && p._t < end);
+      console.log('Filtered interval points:', filtered. length);
+      return filtered.map(p => ({ x: p. x, y: p.y }));
     }
   }
 
