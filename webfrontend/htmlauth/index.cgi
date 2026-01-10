@@ -2,7 +2,7 @@
 use strict;
 use warnings;
 
-use CGI:: Carp qw(fatalsToBrowser warningsToBrowser);
+use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI;
 
 my $q = CGI->new;
