@@ -457,23 +457,29 @@ print <<'JAVASCRIPT';
 
   viewSel.addEventListener('change', () => renderChart(viewSel.value));
 
-  // Initial load:  compute only (no fetch)
+  // Initial load:   compute only (no fetch)
   (async () => {
     try {
       setStatus('Loading computed costs…');
-      const r = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
-      if (!r.ok) throw new Error('compute_costs failed: HTTP ' + r.status);
+      const r = await fetch('compute_costs.cgi? nopublish=1', { cache: 'no-store' });
+      if (!r.ok) throw new Error('compute_costs failed:  HTTP ' + r.status);
       lastReport = await r.json();
+
+      // DEBUG: Log the response
+      console.log('Loaded data:', lastReport);
+      console.log('Intervals count:', lastReport.intervals ?  lastReport.intervals.length : 'none');
+      console.log('Hourly count:', lastReport.hourly ? lastReport.hourly. length : 'none');
 
       if (lastReport && lastReport.error) {
         throw new Error('compute_costs error: ' + (lastReport.message || lastReport.error));
       }
 
       updateDayNavigation();
-      await renderChart(viewSel.value);
+      await renderChart(viewSel. value);
       fillNext24Hours();
       setStatus('Ready.');
     } catch (err) {
+      console.error('Load error:', err);
       setStatus(err.message, true);
     }
   })();
