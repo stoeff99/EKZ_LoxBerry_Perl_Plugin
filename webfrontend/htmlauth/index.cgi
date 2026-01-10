@@ -2,7 +2,7 @@
 use strict;
 use warnings;
 
-use CGI::Carp qw(fatalsToBrowser warningsToBrowser);
+use CGI:: Carp qw(fatalsToBrowser warningsToBrowser);
 use CGI;
 
 my $q = CGI->new;
@@ -18,7 +18,7 @@ my $ASSET_BASE = "$BASEURL/assets";
 my $ICON_BASE  = "$BASEURL/Icons";
 
 # Use an HTML-escaped base URL for href attributes
-my $SAFE_BASEURL = CGI::escapeHTML($BASEURL);
+my $SAFE_BASEURL = CGI:: escapeHTML($BASEURL);
 
 # HTML head and body up to the <script> tag (interpolate variables)
 print <<"HTML_HEAD";
@@ -34,27 +34,27 @@ print <<"HTML_HEAD";
   <style>
     #chartwrap { position: relative; width: 100%; min-height: 340px; }
     canvas { max-height: 520px; }
-    .controls { display: flex; gap:. 75rem; align-items: center; flex-wrap:wrap; margin-bottom:. 5rem;}
+    . controls { display: flex; gap:. 75rem; align-items: center; flex-wrap:wrap; margin-bottom:. 5rem;}
     .legend { display:flex; gap: 16px; align-items:center; flex-wrap:wrap; margin-top:.5rem; color:#cbd5e1 }
-    .dot { width:11px; height:11px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle }
+    .dot { width:11px; height:11px; border-radius:50%; display:inline-block; margin-right: 6px; vertical-align:middle }
     .muted { color:#94a3b8 }
     .btn { padding:.45rem .8rem; border-radius: 8px; border:1px solid rgba(255,255,255,. 18); background:#0f172a; color:#e5e7eb; cursor:pointer }
     .btn:hover { background:#111827 }
-    .btn:disabled { opacity:  0.5; cursor:  not-allowed; }
+    .btn:disabled { opacity: 0.5; cursor:not-allowed; }
     select { padding:.35rem .6rem; border-radius:8px; border:1px solid rgba(255,255,255,.15); background:#0b1220; color:#e5e7eb }
-    .status { margin:. 4rem 0 .3rem 0; font-size:.9rem }
+    .status { margin:. 4rem 0 . 3rem 0; font-size:.9rem }
 
     /* Day navigation buttons */
-    .day-nav { display:  flex; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; }
-    .day-nav . btn-nav { padding: 0.4rem 0.7rem; min-width: 80px; font-weight: 600; }
-    .day-nav .btn-nav. active { background:  #1e40af; border-color: #3b82f6; }
-    .day-nav .day-label { font-size: 1.1rem; font-weight: 600; color: #e5e7eb; min-width: 120px; text-align: center; }
+    .day-nav { display:flex; gap: 0.5rem; align-items:center; margin-bottom:0.75rem; }
+    .day-nav . btn-nav { padding: 0.4rem 0.7rem; min-width:80px; font-weight:600; }
+    .day-nav .btn-nav. active { background:#1e40af; border-color:#3b82f6; }
+    .day-nav .day-label { font-size: 1.1rem; font-weight:600; color:#e5e7eb; min-width:120px; text-align:center; }
 
     /* Next 24 hours table */
-    .costs-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+    .costs-table { width:  100%; border-collapse: collapse; margin-top:  6px; }
     .costs-table th, .costs-table td { padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); }
     .costs-table th { text-align: left; color: #9fb0c9; font-weight: 700; }
-    .costs-table td. cost { text-align: right; font-variant-numeric: tabular-nums; }
+    .costs-table td.cost { text-align: right; font-variant-numeric: tabular-nums; }
   </style>
 
   <!-- Try to load Chart.js early; JS below also has a fallback to local assets -->
@@ -73,7 +73,7 @@ print <<"HTML_HEAD";
   <div class="nav-actions">
     <a class="btn btn-primary" href="start.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
     <a class="btn btn-green"   href="run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now</a>
-    <a class="btn btn-slate"   href="health.cgi"><span class="emoji">🩺</span> Health</a>
+    <a class="btn btn-slate"   href="health. cgi"><span class="emoji">🩺</span> Health</a>
     <a class="btn btn-primary" href="settings.cgi"><span class="emoji">⚙️</span> Settings</a>
   </div>
 
@@ -188,28 +188,28 @@ print <<'JAVASCRIPT';
 
   async function ensureChartLib() {
     if (window.Chart) return;
-    try { await loadScript('https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd. min.js'); } catch {}
+    try { await loadScript('https://cdn.jsdelivr.net/npm/chart. js@4.4.1/dist/chart.umd.min.js'); } catch {}
     if (window.Chart) return;
-    const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chart.umd.min.js';
+    const local = (typeof BASEURL === 'string' ?  BASEURL : '. ') + '/assets/chart.umd.min.js';
     try { await loadScript(local); } catch {}
-    if (!window. Chart) throw new Error('Chart. js not available');
+    if (! window.Chart) throw new Error('Chart.js not available');
   }
 
   async function ensureTimeAdapter() {
-    const hasAdapter = () => !!(window.Chart && Chart._adapters && Chart._adapters._date && Chart._adapters._date.parse);
+    const hasAdapter = () => ! !(window.Chart && Chart._adapters && Chart._adapters._date && Chart._adapters._date.parse);
     if (hasAdapter()) return;
     try {
-      await loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min. js');
+      await loadScript('https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js');
     } catch (e) {
       console.warn('CDN adapter failed:', e. message);
     }
     if (hasAdapter()) return;
-    const local = (typeof BASEURL === 'string' ? BASEURL : '.') + '/assets/chartjs-adapter-date-fns.bundle.min.js';
+    const local = (typeof BASEURL === 'string' ? BASEURL :  '.') + '/assets/chartjs-adapter-date-fns. bundle.min.js';
     try { await loadScript(local); } catch (e) { console.error('Local adapter failed:', e.message); }
   }
 
   function colorByQuantiles(values) {
-    const vs = [...values].filter(v => Number.isFinite(v)).sort((a,b)=>a-b);
+    const vs = [... values]. filter(v => Number.isFinite(v)).sort((a,b)=>a-b);
     const q = (p) => {
       if (vs.length === 0) return 0;
       const idx = (vs.length-1) * p;
@@ -218,7 +218,7 @@ print <<'JAVASCRIPT';
       return vs[lo] + (vs[hi]-vs[lo])*(idx-lo);
     };
     const q25 = q(0.25), q50 = q(0.50), q75 = q(0.75);
-    return (v) => v <= q25 ? '#16a34a' : v <= q50 ? '#4ade80' : v <= q75 ? '#fbbf24' : '#ef4444';
+    return (v) => v <= q25 ? '#16a34a' : v <= q50 ? '#4ade80' : v <= q75 ? '#fbbf24' :  '#ef4444';
   }
 
   function getStartAndEndOfDay(dayOffset) {
@@ -233,12 +233,12 @@ print <<'JAVASCRIPT';
   }
 
   function pointsFromReport(mode) {
-    if (!lastReport) return [];
+    if (! lastReport) return [];
     
     const { start, end } = getStartAndEndOfDay(currentDayOffset);
     
     if (mode === 'hourly') {
-      const rows = Array.isArray(lastReport.hourly) ? lastReport.hourly : [];
+      const rows = Array. isArray(lastReport.hourly) ? lastReport.hourly : [];
       return rows
         .map(r => ({ x: r.hour_start, y: Number(r.avg_total_chf || 0), _t: Date.parse(r.hour_start) }))
         .filter(p => ! isNaN(p._t) && p._t >= start && p._t < end)
@@ -246,7 +246,7 @@ print <<'JAVASCRIPT';
     } else {
       const rows = Array.isArray(lastReport.intervals) ? lastReport.intervals : [];
       return rows
-        .map(r => ({ x: r.start_timestamp, y: Number(r.total_chf || 0), _t: Date.parse(r. start_timestamp) }))
+        .map(r => ({ x: r. start_timestamp, y: Number(r.total_chf || 0), _t: Date.parse(r. start_timestamp) }))
         .filter(p => !isNaN(p._t) && p._t >= start && p._t < end)
         .map(p => ({ x: p.x, y: p.y }));
     }
@@ -258,7 +258,7 @@ print <<'JAVASCRIPT';
     return d.toLocaleString(undefined, {
       weekday: 'short',
       hour: '2-digit',
-      minute:  hourly ? undefined : '2-digit',
+      minute: hourly ? undefined : '2-digit',
       month: 'short',
       day: '2-digit'
     }).replace(',','');
@@ -297,16 +297,16 @@ print <<'JAVASCRIPT';
       options = {
         responsive: true,
         maintainAspectRatio: false,
-        scales: {
+        scales:  {
           x: {
             type: 'time',
             time: { unit, displayFormats: { hour: 'HH:mm', minute: 'HH:mm' } },
-            ticks: { source: 'data', color: '#cbd5e1', maxRotation: 0, autoSkip: true },
+            ticks:  { source: 'data', color: '#cbd5e1', maxRotation: 0, autoSkip: true },
             grid: { color: 'rgba(148,163,184,0.15)' }
           },
           y: {
             ticks: { color: '#cbd5e1' },
-            grid:  { color: 'rgba(148,163,184,0.15)' },
+            grid: { color: 'rgba(148,163,184,0.15)' },
             title: { display: true, text:  'CHF/kWh', color: '#cbd5e1' }
           }
         },
@@ -316,11 +316,11 @@ print <<'JAVASCRIPT';
             callbacks: {
               title: (items) => {
                 const ts = items? .[0]?.parsed?.x;
-                if (!ts) return '';
+                if (! ts) return '';
                 const d = new Date(ts);
-                return isNaN(d) ? String(ts) : d.toLocaleString(undefined, { hour: '2-digit', minute:  '2-digit', weekday: 'short', month: 'short', day:  '2-digit' });
+                return isNaN(d) ? String(ts) : d.toLocaleString(undefined, { hour:  '2-digit', minute: '2-digit', weekday: 'short', month: 'short', day:  '2-digit' });
               },
-              label: (ctx) => ` Total: ${Number(ctx.parsed. y).toFixed(4)} CHF/kWh`
+              label: (ctx) => ` Total: ${Number(ctx.parsed.y).toFixed(4)} CHF/kWh`
             }
           }
         }
@@ -328,7 +328,7 @@ print <<'JAVASCRIPT';
     } else {
       const hourly = mode === 'hourly';
       const labels = points.map(p => fmtLabel(p.x, hourly));
-      const values = points.map(p => p. y);
+      const values = points. map(p => p.y);
 
       data = {
         labels,
@@ -337,7 +337,7 @@ print <<'JAVASCRIPT';
           label: 'Total',
           data: values,
           backgroundColor: values.map(v => colorFn(v)),
-          borderRadius: 4,
+          borderRadius:  4,
         }]
       };
       options = {
@@ -347,19 +347,19 @@ print <<'JAVASCRIPT';
           x: {
             type: 'category',
             ticks: { color: '#cbd5e1', maxRotation: 0, autoSkip: true },
-            grid: { color: 'rgba(148,163,184,0.15)' }
+            grid:  { color: 'rgba(148,163,184,0.15)' }
           },
           y: {
-            ticks: { color: '#cbd5e1' },
+            ticks:  { color: '#cbd5e1' },
             grid: { color: 'rgba(148,163,184,0.15)' },
-            title: { display: true, text: 'CHF/kWh', color:  '#cbd5e1' }
+            title: { display:  true, text: 'CHF/kWh', color: '#cbd5e1' }
           }
         },
-        plugins: {
-          legend: { display: false },
+        plugins:  {
+          legend: { display:  false },
           tooltip: {
             callbacks: {
-              title: (items) => items?.[0]?.label ??  '',
+              title:  (items) => items?.[0]?.label ??  '',
               label: (ctx) => ` Total: ${Number(ctx.raw).toFixed(4)} CHF/kWh`
             }
           }
@@ -374,7 +374,7 @@ print <<'JAVASCRIPT';
     if (! lastReport) return;
 
     const now = Date.now();
-    const items = (Array.isArray(lastReport. hourly) ? lastReport.hourly : [])
+    const items = (Array.isArray(lastReport.hourly) ? lastReport.hourly : [])
       .map(h => Object.assign({ _t: Date.parse(h.hour_start) }, h))
       .filter(h => !isNaN(h._t) && h._t >= now)
       .sort((a,b) => a._t - b._t)
@@ -407,11 +407,11 @@ print <<'JAVASCRIPT';
 
   async function fetchBackendAndCompute() {
     setStatus('Fetching (backend)…');
-    const r1 = await fetch('run_rolling_fetch. cgi? force=1', { cache: 'no-store' });
+    const r1 = await fetch('run_rolling_fetch.cgi? force=1', { cache: 'no-store' });
     if (!r1.ok) throw new Error('Fetch backend failed:  HTTP ' + r1.status);
 
     setStatus('Computing costs for UI…');
-    const r2 = await fetch('compute_costs.cgi?nopublish=1', { cache: 'no-store' });
+    const r2 = await fetch('compute_costs.cgi? nopublish=1', { cache: 'no-store' });
     if (!r2.ok) throw new Error('compute_costs failed: HTTP ' + r2.status);
     lastReport = await r2.json();
 
@@ -437,7 +437,7 @@ print <<'JAVASCRIPT';
     } catch (err) {
       setStatus(err.message, true);
     } finally {
-      btn. disabled = false;
+      btn.disabled = false;
     }
   });
 
@@ -445,7 +445,7 @@ print <<'JAVASCRIPT';
     if (currentDayOffset > 0) {
       currentDayOffset--;
       updateDayNavigation();
-      await renderChart(viewSel. value);
+      await renderChart(viewSel.value);
     }
   });
 
