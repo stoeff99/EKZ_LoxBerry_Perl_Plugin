@@ -126,9 +126,62 @@ sub _iso_to_epoch {
   return undef;
 }
 
+# Ensure daily rotation at midnight
+sub ensure_daily_rotation {
+  my ($cfg) = @_;
+  
+  # Only run during hour 0 (00:00-00:59)
+  my $hour = (localtime(time))[2];
+  return unless $hour == 0;
+  
+  my $marker_file = File::Spec->catfile($lbpdatadir, '.rotated_today');
+  my $today_ymd = strftime('%Y-%m-%d', localtime);
+  
+  # Check if we already rotated today
+  if (-f $marker_file) {
+    if (open my $fh, '<', $marker_file) {
+      my $marker_date = <$fh>;
+      close $fh;
+      chomp $marker_date if defined $marker_date;
+      return if defined $marker_date && $marker_date eq $today_ymd;
+    }
+  }
+  
+  # Perform rotation: tomorrow → today
+  my $today_file = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
+  my $tomorrow_file = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
+  
+  if (-f $tomorrow_file) {
+    my $tomorrow_doc = read_json_file($tomorrow_file, { silent => 1 });
+    if ($tomorrow_doc) {
+      # Write to today file
+      write_json_file($today_file, $tomorrow_doc);
+      
+      # Update tariffs_latest.json as well
+      my $latest_file = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
+      write_json_file($latest_file, $tomorrow_doc);
+      
+      # Delete tomorrow file
+      unlink $tomorrow_file;
+      
+      eval { LOGINF("Daily rotation completed: tomorrow → today at midnight"); 1; };
+    }
+  }
+  
+  # Write marker file
+  if (open my $mf, '>', $marker_file) {
+    print $mf $today_ymd;
+    close $mf;
+    chmod 0640, $marker_file;
+  }
+}
+
 # ---- main ----
 
 my $cfg = eval { load_cfg() } // {};
+
+# Ensure rotation happened if we're in hour 0
+ensure_daily_rotation($cfg);
 
 my ($src_path, $doc, $err) = read_latest_json();
 if ($err) {
@@ -502,11 +555,27 @@ my $topic_relative  = $cfg->{mqtt_topic_relative} // 'ekz/ems/tariffs/relative';
 my ($pub_intervals_ok, $pub_hourly_ok) = (0, 0);
 my $pub_relative_ok = 0;
 if (!$nopublish) {
-  # Add time check to prevent overwriting today's data with tomorrow's data
-  # Only publish absolute values (intervals/hourly) at 23:59 or during hour 0 (00:00-00:59)
-  # This prevents publishing when tomorrow's data is in tariffs_latest.json (18:00-23:58)
-  my ($hour, $min) = (localtime(time))[2,1];
-  my $allow_absolute_publish = ($hour == 23 && $min >= 59) || ($hour == 0);
+  # Replace time-based absolute publish lockout with data-freshness check
+  # Publish if the data's window overlaps with today
+  my @lt_now = localtime(time);
+  my $today_start = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
+  my $today_end = $today_start + WINDOW_END_OFFSET_SEC;
+  
+  my $allow_absolute_publish = 0;
+  
+  # Check if we have data and if it overlaps with today
+  if (@sorted > 0) {
+    my $first_start = _iso_to_epoch($sorted[0]{start_timestamp});
+    my $last_end = _iso_to_epoch($sorted[-1]{end_timestamp});
+    
+    if (defined $first_start && defined $last_end) {
+      # Data overlaps with today if:
+      # - data starts before today ends AND
+      # - data ends after today starts
+      my $data_is_for_today = ($first_start < $today_end) && ($last_end >= $today_start);
+      $allow_absolute_publish = $data_is_for_today;
+    }
+  }
   
   if ($allow_absolute_publish) {
     $pub_intervals_ok = publish_mqtt($cfg, $topic_intervals, $json_intervals, { retain => 1, pre_encoded => 1 }) ? 1 : 0;
