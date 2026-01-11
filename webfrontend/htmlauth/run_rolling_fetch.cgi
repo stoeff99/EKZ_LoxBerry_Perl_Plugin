@@ -86,6 +86,7 @@ sub _ordered_block {
     grid            => _ordered_cost_array($p->{grid}),
     integrated      => _ordered_cost_array($p->{integrated}),
     regional_fees   => _ordered_cost_array($p->{regional_fees}),
+    metering        => _ordered_cost_array($p->{metering}),
   );
   return \%o;
 }
