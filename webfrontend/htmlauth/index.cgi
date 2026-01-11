@@ -288,7 +288,7 @@ print <<'JAVASCRIPT';
     // Show message if no data for selected day
     if (points.length === 0) {
       const dayName = currentDayOffset === 0 ?  'today' : currentDayOffset === 1 ?  'tomorrow' : 'this day';
-      setStatus(`No data available for ${dayName}. Try fetching data. `, false);
+      setStatus(`No data available for ${dayName}. Try fetching data.`, false);
     }
 
     let data, options;
@@ -434,7 +434,7 @@ print <<'JAVASCRIPT';
 
     const ic = (lastReport && lastReport.interval_count_output) || 0;
     const hc = (lastReport && lastReport.hour_count_output) || 0;
-    setStatus(`Ready. Intervals: ${ic}, hours: ${hc}.`);
+    setStatus(`Ready.Intervals: ${ic}, hours: ${hc}.`);
   }
 
   btnFetch.addEventListener('click', async (e) => {
