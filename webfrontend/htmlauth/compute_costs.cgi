@@ -227,6 +227,13 @@ sub verify_and_reformat_prices {
 # Builds a single canonical data model from merged rows (today + tomorrow)
 # that is used for both UI charts and MQTT/Influx outputs.
 # This eliminates duplicate aggregation logic and prevents mismatches.
+#
+# Parameters:
+#   $sorted_rows          - Array ref of sorted tariff blocks (today + tomorrow merged)
+#   $publication_timestamp - Publication timestamp (currently unused, reserved for future use)
+#
+# Returns:
+#   Hash ref with canonical structures (intervals_raw, quarter_map, hourly_map, etc.)
 sub build_canonical_tariff_data {
   my ($sorted_rows, $publication_timestamp) = @_;
   
@@ -272,6 +279,7 @@ sub build_canonical_tariff_data {
     push @intervals_raw, $interval_entry;
     
     # Add to quarter_map (keyed by normalized quarter-hour epoch)
+    # Note: Only first interval per quarter is stored for forward-fill lookup
     my $quarter_epoch = int($start_epoch / 900) * 900;
     unless (exists $quarter_map{$quarter_epoch}) {
       $quarter_map{$quarter_epoch} = $interval_entry;
@@ -299,7 +307,7 @@ sub build_canonical_tariff_data {
   # Finalize hourly_map: compute averages and format ISO strings
   for my $hour_epoch (keys %hourly_map) {
     my $h = $hourly_map{$hour_epoch};
-    my $n = $h->{n} || 1;
+    my $n = $h->{n} || 1;  # n should always be >= 1, but || 1 provides safety fallback
     
     # Format local ISO timestamp with timezone offset
     my $d = strftime('%Y-%m-%dT%H:00:00', localtime($hour_epoch));
