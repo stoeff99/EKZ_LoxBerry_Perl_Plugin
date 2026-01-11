@@ -24,6 +24,9 @@ my $q = CGI->new;
 print $q->header('application/json; charset=utf-8');
 
 my $nopublish = ($q->param('nopublish') // '') ne '' ? 1 : 0;
+my $debug_dump = ($q->param('debug_dump') // '') ne '' ? 1 : 0;
+
+eval { LOGDEB("compute_costs.cgi: debug_dump mode = $debug_dump"); 1; } if $debug_dump;
 
 # ---- helpers ----
 
@@ -220,6 +223,98 @@ sub verify_and_reformat_prices {
   return \@reformatted;
 }
 
+sub build_canonical_tariff_data {
+  my ($doc, $opts) = @_;
+  $opts //= {};
+  
+  my $debug_dump = $opts->{debug_dump} // 0;
+  
+  return {} unless $doc;
+  
+  my $rows = $doc->{prices};
+  $rows = $doc->{rows} if !defined $rows;
+  
+  unless ($rows && ref($rows) eq 'ARRAY' && @$rows > 0) {
+    eval { LOGWARN("build_canonical_tariff_data: No valid rows/prices array found"); 1; };
+    return {};
+  }
+  
+  eval { LOGDEB("build_canonical_tariff_data: Processing " . scalar(@$rows) . " blocks"); 1; } if $debug_dump;
+  
+  my %hour_map;
+  my @intervals_data;
+  
+  for my $b (@$rows) {
+    next unless ref($b) eq 'HASH';
+    my $start = $b->{start_timestamp};
+    next unless defined $start;
+    
+    my $hour_key = hour_start_from($start);
+    my $e = _iso_to_epoch($hour_key);
+    unless (defined $e) {
+      eval { LOGWARN("build_canonical_tariff_data: Could not parse epoch from hour_key: $hour_key"); 1; };
+      next;
+    }
+    
+    my $k = int($e/3600)*3600;
+    
+    # Calculate costs for this block
+    my ($Y,$M) = (parse_ymdh($start))[0,1];
+    my $hours_in_month = days_in_month($Y,$M) * 24;
+    my $kwh_total = kwh_total_for_block($b);
+    my $monthly_m = monthly_M_total_for_block($b);
+    my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
+    my $sum_total = $kwh_total + $fixed_per_hour;
+    
+    # Store interval data
+    push @intervals_data, {
+      start_timestamp => $start,
+      end_timestamp => $b->{end_timestamp} // '',
+      chf_per_kwh_sum => $kwh_total,
+      chf_m_per_hour => $fixed_per_hour,
+      total_chf => $sum_total,
+      month_hours_used => $hours_in_month,
+    };
+    
+    # Aggregate by hour
+    unless (exists $hour_map{$k}) {
+      $hour_map{$k} = {
+        hour_start => $hour_key,
+        n => 0,
+        kwh_sum => 0,
+        fixed_sum => 0,
+        total_sum => 0,
+      };
+    }
+    
+    $hour_map{$k}{n} += 1;
+    $hour_map{$k}{kwh_sum} += $kwh_total;
+    $hour_map{$k}{fixed_sum} += $fixed_per_hour;
+    $hour_map{$k}{total_sum} += $sum_total;
+  }
+  
+  # Compute averages for hourly data
+  for my $k (keys %hour_map) {
+    my $entry = $hour_map{$k};
+    my $n = $entry->{n} || 1;
+    $entry->{avg_total_chf} = $entry->{total_sum} / $n;
+    $entry->{avg_chf_per_kwh_sum} = $entry->{kwh_sum} / $n;
+    $entry->{avg_chf_m_per_hour} = $entry->{fixed_sum} / $n;
+    $entry->{intervals_count} = $n;
+    delete $entry->{n};
+    delete $entry->{kwh_sum};
+    delete $entry->{fixed_sum};
+    delete $entry->{total_sum};
+  }
+  
+  eval { LOGDEB("build_canonical_tariff_data: Built " . scalar(keys %hour_map) . " hours, " . scalar(@intervals_data) . " intervals"); 1; } if $debug_dump;
+  
+  return {
+    hour_map => \%hour_map,
+    intervals => \@intervals_data,
+  };
+}
+
 # ---- main ----
 
 my $cfg = eval { load_cfg() } // {};
@@ -276,52 +371,19 @@ my $pub_ts = $doc->{publication_timestamp} // '';
 eval { LOGINF("Total sorted intervals: " . scalar(@sorted)); 1; };
 
 # --------------------------
-# Build raw intervals and hourly aggregates
+# Build raw intervals and hourly aggregates using canonical data builder
 # --------------------------
-my @intervals_raw;
-my %hour_groups;
+eval { LOGDEB("Building canonical tariff data from sorted blocks"); 1; } if $debug_dump;
 
-for my $b (@sorted) {
-  my $start = $b->{start_timestamp} // next;
-  my $end = $b->{end_timestamp} // '';
+my $canonical = build_canonical_tariff_data({ prices => \@sorted }, { debug_dump => $debug_dump });
+my @intervals_raw = @{$canonical->{intervals} // []};
+my %hour_groups_data = %{$canonical->{hour_map} // {}};
 
-  my ($Y,$M) = (parse_ymdh($start))[0,1];
-  my $hours_in_month = days_in_month($Y,$M) * 24;
-
-  my $kwh_total = kwh_total_for_block($b);
-  my $monthly_m = monthly_M_total_for_block($b);
-  my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
-  my $sum_total = $kwh_total + $fixed_per_hour;
-
-  my $hour_key = hour_start_from($start);
-
-  push @intervals_raw, {
-    start_timestamp => $start,
-    end_timestamp => $end,
-    chf_per_kwh_sum => $kwh_total,
-    chf_m_per_hour => $fixed_per_hour,
-    total_chf => $sum_total,
-    month_hours_used => $hours_in_month,
-  };
-
-  $hour_groups{$hour_key} ||= { n => 0, kwh_sum => 0, fixed_sum => 0, total_sum => 0 };
-  $hour_groups{$hour_key}{n} += 1;
-  $hour_groups{$hour_key}{kwh_sum} += $kwh_total;
-  $hour_groups{$hour_key}{fixed_sum} += $fixed_per_hour;
-  $hour_groups{$hour_key}{total_sum} += $sum_total;
-}
+eval { LOGDEB("Canonical data: " . scalar(@intervals_raw) . " intervals, " . scalar(keys %hour_groups_data) . " hours"); 1; } if $debug_dump;
 
 my @hourly_raw;
-for my $hk (sort keys %hour_groups) {
-  my $g = $hour_groups{$hk};
-  my $n = $g->{n} || 1;
-  push @hourly_raw, {
-    hour_start => $hk,
-    avg_total_chf => $g->{total_sum} / $n,
-    avg_chf_per_kwh_sum => $g->{kwh_sum} / $n,
-    avg_chf_m_per_hour => $g->{fixed_sum} / $n,
-    intervals_count => $n,
-  };
+for my $hk (sort keys %hour_groups_data) {
+  push @hourly_raw, $hour_groups_data{$hk};
 }
 
 # --------------------------
@@ -475,61 +537,20 @@ my $json_hourly = JSON::PP->new->canonical(1)->encode($hourly_msg);
 # --------------------------
 
 sub _add_blocks_to_map {
-  my ($doc, $map_ref) = @_;
+  my ($doc, $map_ref, $debug_dump) = @_;
   return unless $doc;
   
-  my $rows = $doc->{prices};
-  $rows = $doc->{rows} if !defined $rows;
+  eval { LOGDEB("_add_blocks_to_map: Using build_canonical_tariff_data"); 1; } if $debug_dump;
   
-  unless ($rows && ref($rows) eq 'ARRAY' && @$rows > 0) {
-    eval { LOGWARN("_add_blocks_to_map: No valid rows/prices array found"); 1; };
-    return;
+  my $canonical = build_canonical_tariff_data($doc, { debug_dump => $debug_dump });
+  my $hour_map = $canonical->{hour_map} // {};
+  
+  # Merge into the target map
+  for my $k (keys %$hour_map) {
+    $map_ref->{$k} = $hour_map->{$k};
   }
   
-  eval { LOGDEB("_add_blocks_to_map: Processing " . scalar(@$rows) . " blocks"); 1; };
-  
-  for my $b (@$rows) {
-    next unless ref($b) eq 'HASH';
-    my $start = $b->{start_timestamp};
-    next unless defined $start;
-    
-    my $hour_key = hour_start_from($start);
-    my $e = _iso_to_epoch($hour_key);
-    unless (defined $e) {
-      eval { LOGWARN("Could not parse epoch from hour_key: $hour_key"); 1; };
-      next;
-    }
-    
-    my $k = int($e/3600)*3600;
-    
-    unless (exists $map_ref->{$k}) {
-      $map_ref->{$k} = {
-        hour_start => $hour_key,
-        n => 0,
-        total_sum => 0,
-      };
-    }
-    
-    my ($Y,$M) = (parse_ymdh($start))[0,1];
-    my $hours_in_month = days_in_month($Y,$M) * 24;
-    my $kwh_total = kwh_total_for_block($b);
-    my $monthly_m = monthly_M_total_for_block($b);
-    my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
-    my $sum_total = $kwh_total + $fixed_per_hour;
-    
-    $map_ref->{$k}{n} += 1;
-    $map_ref->{$k}{total_sum} += $sum_total;
-  }
-  
-  for my $k (keys %$map_ref) {
-    my $entry = $map_ref->{$k};
-    my $n = $entry->{n} || 1;
-    $entry->{avg_total_chf} = $entry->{total_sum} / $n;
-    delete $entry->{n};
-    delete $entry->{total_sum};
-  }
-  
-  eval { LOGDEB("_add_blocks_to_map: Added " . scalar(keys %$map_ref) . " hours to map"); 1; };
+  eval { LOGDEB("_add_blocks_to_map: Added " . scalar(keys %$hour_map) . " hours to map"); 1; } if $debug_dump;
 }
 
 my %hour_epoch_map_rel;
@@ -538,13 +559,15 @@ if (! $today_doc) {
   eval { LOGERR("Cannot build relative values: today's tariff data is missing"); 1; };
 } else {
   eval { LOGINF("Loading today's data for relative view"); 1; };
-  _add_blocks_to_map($today_doc, \%hour_epoch_map_rel);
+  eval { LOGDEB("Calling _add_blocks_to_map for today's data"); 1; } if $debug_dump;
+  _add_blocks_to_map($today_doc, \%hour_epoch_map_rel, $debug_dump);
   eval { LOGINF("Added " . scalar(keys %hour_epoch_map_rel) . " hours from today's data"); 1; };
 }
 
 if ($tomorrow_doc) {
   eval { LOGINF("Loading tomorrow's data for relative view"); 1; };
-  _add_blocks_to_map($tomorrow_doc, \%hour_epoch_map_rel);
+  eval { LOGDEB("Calling _add_blocks_to_map for tomorrow's data"); 1; } if $debug_dump;
+  _add_blocks_to_map($tomorrow_doc, \%hour_epoch_map_rel, $debug_dump);
   eval { LOGINF("Total " . scalar(keys %hour_epoch_map_rel) . " hours in relative map"); 1; };
 } else {
   eval { LOGWARN("Tomorrow's tariff data not available yet"); 1; };
