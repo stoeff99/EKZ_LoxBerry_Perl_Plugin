@@ -345,7 +345,7 @@ sub _local_q_end_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:%M:00', localtime
 # Build filled hourly and intervals for 48 hours
 # --------------------------
 my @hourly_filled;
-for my $day_offset (0..1) {
+for my $day_offset (0..0) {
   my $day_midnight_epoch = $midnight_local_epoch + ($day_offset * 86400);
   
   for my $h_off (0..47) {  # 48 hours = today + tomorrow
@@ -371,7 +371,7 @@ for my $day_offset (0..1) {
 }
 
 my @intervals_filled;
-for my $day_offset (0..1) {
+for my $day_offset (0..0) {
   my $day_midnight_epoch = $midnight_local_epoch + ($day_offset * 86400);
   
   for my $q_off (0..191) {  # 192 = 48 hours * 4 intervals/hour
