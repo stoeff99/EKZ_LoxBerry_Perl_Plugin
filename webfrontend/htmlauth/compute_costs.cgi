@@ -104,14 +104,17 @@ sub kwh_total_for_block {
 sub monthly_M_total_for_block {
   my ($b) = @_;
   return 0 unless ref($b) eq 'HASH';
+  
+  my $metering_m = get_unit_value($b->{metering}, 'CHF_M');
   my $i_m = get_unit_value($b->{integrated}, 'CHF_M');
   my $r_m = get_unit_value($b->{regional_fees}, 'CHF_M');
+  
   if ($i_m) {
-    return $i_m + $r_m;
+    return $i_m + $r_m + $metering_m;
   } else {
     my $e_m = get_unit_value($b->{electricity}, 'CHF_M');
     my $g_m = get_unit_value($b->{grid}, 'CHF_M');
-    return $e_m + $g_m + $r_m;
+    return $e_m + $g_m + $r_m + $metering_m;
   }
 }
 
@@ -191,11 +194,12 @@ sub verify_and_reformat_prices {
     my $has_grid = exists $p->{grid};
     my $has_integ = exists $p->{integrated};
     my $has_regional = exists $p->{regional_fees};
+    my $has_metering = exists $p->{metering};
     
-    if (! $has_start || !$has_end || !$has_elec || !$has_grid || !$has_integ || ! $has_regional) {
+    if (! $has_start || !$has_end || !$has_elec || !$has_grid || !$has_integ || ! $has_regional || ! $metering) {
       $missing_count++;
       eval { LOGWARN("Interval $i missing fields: " . 
-        "start=$has_start end=$has_end elec=$has_elec grid=$has_grid integ=$has_integ regional=$has_regional"); 1; };
+        "start=$has_start end=$has_end elec=$has_elec grid=$has_grid integ=$has_integ regional=$has_regional metering=$has_metering"); 1; };
     }
     
     # Reformat in preferred order
@@ -206,6 +210,7 @@ sub verify_and_reformat_prices {
       grid => $p->{grid},
       integrated => $p->{integrated},
       regional_fees => $p->{regional_fees},
+      metering => $p->{metering},
     };
   }
   
