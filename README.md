@@ -1,8 +1,8 @@
 # EKZ LoxBerry Perl Plugin
 
-A LoxBerry plugin that fetches EKZ electricity tariffs and publishes them to MQTT. It includes an OAuth2/OIDC sign‑in to EKZ, an EMS “linking” flow, a rolling fetch window, and a simple web UI.
+A LoxBerry plugin that fetches EKZ electricity tariffs and publishes them to MQTT. It includes an OAuth2 / OIDC sign‑in to EKZ, an EMS “linking” flow, a rolling fetch window, and a simple web UI with an interactive chart and a compute-only path (to compute prices locally without publishing).
 
-Important: You must host this plugin behind your own publicly‑reachable domain with HTTPS and a reverse proxy (e.g., Caddy or Nginx). EKZ’s identity provider must be able to redirect back to your domain on the plugin’s callback URL.
+Important: You must host this plugin behind a publicly‑reachable HTTPS domain with a reverse proxy (e.g., Caddy or Nginx). EKZ’s identity provider must be able to redirect back to your domain on the plugin’s callback URL.
 
 ---
 
@@ -16,8 +16,8 @@ Important: You must host this plugin behind your own publicly‑reachable domain
 - EKZ OIDC client setup
 - Install the plugin
 - Configure the plugin
-- Sign-in and EMS linking
-- Fetching and MQTT
+- Sign‑in and EMS linking
+- Fetching, compute-only and MQTT
 - Scheduling (cron)
 - Logs and troubleshooting
 - Security notes
@@ -43,15 +43,17 @@ Important: You must host this plugin behind your own publicly‑reachable domain
 - “Sign in (OIDC)” redirects to EKZ’s identity provider.
 - EKZ redirects back to your callback URL:  
   `https://<your-domain>/admin/plugins/ekz_plugin/callback.cgi`
-- Plugin exchanges the `code` for tokens and stores them in JSON.
-- Plugin checks EMS link status and, if needed, redirects the user to link EMS.
+- Plugin exchanges the `code` for tokens and writes token JSON.
+  - The plugin will check a central token path first (`/opt/loxberry/data/ekz/tokens.json`) and fall back to the plugin data folder token file (`<loxberry plugin data dir>/tokens.json`).
+- Plugin checks EMS link status and, if needed, redirects the user to link EMS at EKZ.
 - Scheduled or manual fetch reads tariffs (customer first, fallback to public), persists JSON, and publishes to MQTT.
+- The web UI includes charting and a compute-only endpoint so you can compute cost reports from the latest stored tariffs without publishing to MQTT.
 
 ---
 
 ## Reverse proxy examples
 
-The proxy must terminate TLS and forward `/admin/plugins/ekz_plugin/*` to your LoxBerry host. It does not need special headers beyond the standard proxying; the plugin runs CGI under LoxBerry.
+The proxy must terminate TLS and forward `/admin/plugins/ekz_plugin/*` to your LoxBerry host. The plugin runs as CGI under LoxBerry; no special headers are required beyond standard proxying.
 
 ### Caddy (recommended)
 
@@ -68,7 +70,6 @@ ems.yourdomain.tld {
     header_up X-Forwarded-For {remote_host}
   }
 
-  # Optional: increase limits if needed
   request_body {
     max_size 20MB
   }
@@ -127,15 +128,15 @@ Make sure your plugin config uses either all “test” endpoints or all “prod
 ## Install the plugin
 
 - Clone or download this repository into LoxBerry’s plugin path or install via the LoxBerry plugin manager if packaged.
-- Place an optional banner image:  
+- Place an optional banner image at:  
   `webfrontend/htmlauth/Icons/banner.jpg`
-- Ensure the plugin files are readable by LoxBerry’s web server.
+- Ensure plugin files are readable by LoxBerry’s web server.
 
 ---
 
 ## Configure the plugin
 
-The plugin’s runtime configuration is stored in a common JSON file:
+The plugin’s runtime configuration is stored in JSON:
 
 - Path:  
   `/opt/loxberry/data/plugins/ekz_plugin/ekz_config.json`
@@ -153,7 +154,7 @@ Key fields in the JSON:
 - `mqtt_topic_raw`, `mqtt_topic_summary`
 - `fallback_tariff_name`
 - `retries` (HTTP/API retry attempts)
-- `token_store_path` (optional custom path for tokens)
+- `token_store_path` (optional custom path for tokens; plugin will also check the central `/opt/loxberry/data/ekz/tokens.json` before the plugin data folder)
 - `fetch_schedule` (see Scheduling below)
 
 Saving settings will write to the JSON file and update the cron wrapper.
@@ -163,28 +164,32 @@ Saving settings will write to the JSON file and update the cron wrapper.
 ## Sign‑in and EMS linking
 
 Steps:
-1. Open `index.cgi` and click “Sign in (OIDC)”.
-2. Authenticate at EKZ; you’ll be redirected back to the plugin’s `callback.cgi`.
-3. The plugin exchanges the code for tokens and stores them (refresh + access).
+1. Open the plugin UI (`index.cgi`) and click “Sign in (OIDC)”.
+2. Authenticate at EKZ; you’ll be redirected back to `callback.cgi`.
+3. The plugin exchanges the code for tokens and stores them (access + refresh if `offline_access` is enabled).
 4. The plugin checks EMS link status:
    - If `link_required`, you’ll be shown a link to complete the EMS linking flow at EKZ.
    - After linking, return to the plugin UI.
 
-Tokens are stored with mode `0640`. If you enable `offline_access`, refresh tokens are used to renew access tokens automatically.
+Token storage:
+- The plugin will look for a central token file at `/opt/loxberry/data/ekz/tokens.json` and will fall back to the plugin data token file (`<loxberry plugin data dir>/tokens.json`) if the central file is absent.
+- Tokens are written with mode `0640` by default; `token_store_path` can be used to change location.
 
 ---
 
-## Fetching and MQTT
+## Fetching, compute-only and MQTT
 
-- Manual fetch: click “Fetch now (rolling 24h)” on the UI.
+- Manual fetch: click “Fetch now (rolling 24h)” on the UI (this triggers `run_rolling_fetch.cgi`).
+- Compute-only endpoint: `compute_costs.cgi` reads the latest stored tariffs (tariffs_latest.json) and computes cost reports. Use `?nopublish=1` to compute without publishing to MQTT; the UI uses this to draw charts without duplicate publishes.
+- The UI also exposes a chart view (fetch_chart / index) that uses the compute endpoint and Chart.js to render interactive graphs.
 - MQTT:
-  - The plugin tries `Net::MQTT::Simple`. If the library refuses insecure password login (common on port 1883), it falls back to `mosquitto_pub`.
-  - Install `mosquitto-clients` for the fallback.
+  - The plugin tries `Net::MQTT::Simple`. If the library refuses insecure password login (common on port 1883) it falls back to `mosquitto_pub`.
+  - Install `mosquitto-clients` to enable this fallback.
 - Topics:
   - Raw data: `mqtt_topic_raw` (e.g., `ekz/ems/tariffs/raw`)
   - Summary: `mqtt_topic_summary` (e.g., `ekz/ems/tariffs/now_plus_24h`)
 
-Tariffs JSON is persisted in:
+Tariffs JSON persisted at:
 - `/opt/loxberry/data/plugins/ekz_plugin/tariffs_latest.json`
 - Plus windowed files named with the fetch interval.
 
@@ -211,6 +216,21 @@ After saving settings, verify:
 
 ---
 
+## Health check
+
+A simple health endpoint is available:
+
+- `https://<your-domain>/admin/plugins/ekz_plugin/health.cgi`
+
+It reports basic status lines such as:
+- `health: OK`
+- `config: OK` or `MISSING`
+- `tokens: present (/opt/loxberry/data/ekz/tokens.json)` or `MISSING`
+
+This endpoint helps quickly verify that config and token files are present and that the plugin is reachable.
+
+---
+
 ## Logs and troubleshooting
 
 Plugin log:
@@ -221,12 +241,12 @@ Cron update log (if an error occurs while writing cron):
 
 Fetch records (ring buffer - last 10 successful fetches):
 - `/opt/loxberry/data/plugins/ekz_plugin/fetch_records/fetch_record_00.json` (most recent)
-- `/opt/loxberry/data/plugins/ekz_plugin/fetch_records/fetch_record_09.json` (oldest)
-- See [docs/RING_BUFFER.md](docs/RING_BUFFER.md) for details
+- `/opt/loxberry/data/plugins/ekz_plugin/fetch_records/fetch_record_09.json` (oldest)  
+See [docs/RING_BUFFER.md](docs/RING_BUFFER.md) for rotation details.
 
 Common issues:
 - 401 unauthorized_client during sign‑in:
-  - Check `client_id/client_secret`, realm, and environment (prod vs test).
+  - Check `client_id` / `client_secret`, realm, and environment (prod vs test).
   - Ensure `redirect_uri` matches exactly the EKZ client setting.
 - 502 on callback:
   - Reverse proxy not forwarding `/admin/plugins/ekz_plugin/`.
@@ -234,7 +254,7 @@ Common issues:
 - No scheduled fetch:
   - Ensure `fetch_schedule` is set.
   - Confirm the cron wrapper exists and is executable.
-  - Check that your LoxBerry time/timezone is correct.
+  - Check LoxBerry time/timezone.
 - MQTT publish failures:
   - Install `mosquitto-clients`.
   - Verify broker credentials and connectivity.
@@ -247,6 +267,7 @@ Common issues:
 - Use HTTPS on your domain; EKZ redirects should not use plain HTTP.
 - Keep `client_secret` confidential; it is only updated if you enter a new value in the UI.
 - Token JSON is written with `0640` permissions; consider a dedicated secure path via `token_store_path`.
+- The plugin will check for a central token file at `/opt/loxberry/data/ekz/tokens.json`. If you use a central token file, ensure it has appropriate ownership and permissions.
 
 ---
 
