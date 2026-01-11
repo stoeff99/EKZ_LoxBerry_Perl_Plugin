@@ -318,8 +318,6 @@ for my $hk (sort keys %hour_groups) {
   };
 }
 
-my $pub_ts = $doc->{publication_timestamp} // '';
-
 # --------------------------
 # Forward-fill absolute outputs
 # --------------------------
@@ -469,7 +467,6 @@ my $json_hourly = JSON::PP->new->canonical(1)->encode($hourly_msg);
 # --------------------------
 # Relative 24-hour view
 # --------------------------
-my ($today_doc, $tomorrow_doc) = read_today_and_tomorrow_json();
 
 sub _add_blocks_to_map {
   my ($doc, $map_ref) = @_;
