@@ -324,7 +324,7 @@ print <<'JAVASCRIPT';
           tooltip: {
             callbacks: {
               title: (items) => {
-                const ts = items? .[0]?.parsed?.x;
+                const ts = items?.[0]?.parsed?.x;
                 if (! ts) return '';
                 const d = new Date(ts);
                 return isNaN(d) ? String(ts) : d.toLocaleString(undefined, { hour:  '2-digit', minute: '2-digit', weekday: 'short', month: 'short', day:  '2-digit' });
@@ -368,7 +368,7 @@ print <<'JAVASCRIPT';
           legend: { display:  false },
           tooltip: {
             callbacks: {
-              title:  (items) => items?.[0]?.label ??  '',
+              title: (items) => items?.[0]?.label ??  '',
               label: (ctx) => ` Total: ${Number(ctx.raw).toFixed(4)} CHF/kWh`
             }
           }
