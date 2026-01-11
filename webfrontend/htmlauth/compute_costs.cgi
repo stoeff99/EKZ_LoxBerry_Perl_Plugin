@@ -24,6 +24,7 @@ my $q = CGI->new;
 print $q->header('application/json; charset=utf-8');
 
 my $nopublish = ($q->param('nopublish') // '') ne '' ? 1 : 0;
+my $debug_dump = ($q->param('debug_dump') // '') ne '' ? 1 : 0;
 
 # ---- helpers ----
 
@@ -220,6 +221,202 @@ sub verify_and_reformat_prices {
   return \@reformatted;
 }
 
+# --------------------------
+# Canonical tariff data builder
+# --------------------------
+sub build_canonical_tariff_data {
+  my ($merged_rows, $publication_timestamp) = @_;
+  
+  # Sort input rows by start timestamp
+  my @sorted = sort {
+    ($a->{start_timestamp} // '') cmp ($b->{start_timestamp} // '')
+  } grep { ref $_ eq 'HASH' && $_->{start_timestamp} } @$merged_rows;
+  
+  eval { LOGDEB("build_canonical_tariff_data: Processing " . scalar(@sorted) . " intervals"); 1; };
+  
+  # Build intervals_raw with numeric epochs
+  my @intervals_raw;
+  my %quarter_hour_map;  # Keyed by quarter-hour epoch for lookup
+  
+  for my $b (@sorted) {
+    my $start_iso = $b->{start_timestamp} // next;
+    my $end_iso = $b->{end_timestamp} // '';
+    
+    my $start_epoch = _iso_to_epoch($start_iso);
+    my $end_epoch = _iso_to_epoch($end_iso);
+    next unless defined $start_epoch;
+    
+    # Normalize to quarter-hour boundary
+    my $q_epoch = int($start_epoch / 900) * 900;
+    
+    my ($Y, $M) = (parse_ymdh($start_iso))[0, 1];
+    my $hours_in_month = days_in_month($Y, $M) * 24;
+    
+    my $kwh_total = kwh_total_for_block($b);
+    my $monthly_m = monthly_M_total_for_block($b);
+    my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
+    my $sum_total = $kwh_total + $fixed_per_hour;
+    
+    my $entry = {
+      start_epoch => $start_epoch + 0,
+      end_epoch => (defined $end_epoch ? $end_epoch + 0 : $start_epoch + 900),
+      start_timestamp => $start_iso,
+      end_timestamp => $end_iso,
+      chf_per_kwh_sum => $kwh_total + 0,
+      chf_m_per_hour => $fixed_per_hour + 0,
+      total_chf => $sum_total + 0,
+      month_hours_used => $hours_in_month + 0,
+    };
+    
+    push @intervals_raw, $entry;
+    
+    # Store in quarter-hour map (first occurrence wins)
+    $quarter_hour_map{$q_epoch} = $entry unless exists $quarter_hour_map{$q_epoch};
+  }
+  
+  # Build hourly_map by aggregating quarter-hour intervals
+  my %hourly_map;
+  
+  for my $b (@sorted) {
+    my $start_iso = $b->{start_timestamp};
+    next unless defined $start_iso;
+    
+    my $start_epoch = _iso_to_epoch($start_iso);
+    next unless defined $start_epoch;
+    
+    # Normalize to hour boundary
+    my $hour_epoch = int($start_epoch / 3600) * 3600;
+    
+    # Generate hour_start ISO string from normalized epoch
+    my @lt = localtime($hour_epoch);
+    my $hour_iso = strftime('%Y-%m-%dT%H:00:00', @lt);
+    my $tz_offset = strftime('%z', @lt);
+    $tz_offset =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
+    my $hour_start_iso = $hour_iso . $tz_offset;
+    
+    my ($Y, $M) = (parse_ymdh($start_iso))[0, 1];
+    my $hours_in_month = days_in_month($Y, $M) * 24;
+    
+    my $kwh_total = kwh_total_for_block($b);
+    my $monthly_m = monthly_M_total_for_block($b);
+    my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
+    my $sum_total = $kwh_total + $fixed_per_hour;
+    
+    unless (exists $hourly_map{$hour_epoch}) {
+      $hourly_map{$hour_epoch} = {
+        hour_start => $hour_start_iso,
+        n => 0,
+        kwh_sum => 0,
+        fixed_sum => 0,
+        total_sum => 0,
+      };
+    }
+    
+    $hourly_map{$hour_epoch}{n} += 1;
+    $hourly_map{$hour_epoch}{kwh_sum} += $kwh_total;
+    $hourly_map{$hour_epoch}{fixed_sum} += $fixed_per_hour;
+    $hourly_map{$hour_epoch}{total_sum} += $sum_total;
+  }
+  
+  # Compute averages for hourly_map
+  for my $epoch (keys %hourly_map) {
+    my $entry = $hourly_map{$epoch};
+    my $n = $entry->{n} || 1;
+    $entry->{avg_total_chf} = ($entry->{total_sum} / $n) + 0;
+    $entry->{avg_chf_per_kwh_sum} = ($entry->{kwh_sum} / $n) + 0;
+    $entry->{avg_chf_m_per_hour} = ($entry->{fixed_sum} / $n) + 0;
+    $entry->{intervals_count} = $n + 0;
+    # Clean up temporary fields
+    delete $entry->{n};
+    delete $entry->{kwh_sum};
+    delete $entry->{fixed_sum};
+    delete $entry->{total_sum};
+  }
+  
+  # Build hourly_list sorted by epoch
+  my @hourly_list;
+  for my $epoch (sort { $a <=> $b } keys %hourly_map) {
+    push @hourly_list, {
+      hour_start => $hourly_map{$epoch}{hour_start},
+      avg_total_chf => $hourly_map{$epoch}{avg_total_chf},
+      avg_chf_per_kwh_sum => $hourly_map{$epoch}{avg_chf_per_kwh_sum},
+      avg_chf_m_per_hour => $hourly_map{$epoch}{avg_chf_m_per_hour},
+      intervals_count => $hourly_map{$epoch}{intervals_count},
+    };
+  }
+  
+  # Build intervals_filled with forward-fill logic for 48 hours
+  my @lt_now = localtime(time);
+  my $midnight_local_epoch = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
+  
+  my @quarter_epochs_sorted = sort { $a <=> $b } keys %quarter_hour_map;
+  my @hour_epochs_sorted = sort { $a <=> $b } keys %hourly_map;
+  
+  # Helper to get latest quarter-hour entry before or at epoch
+  my $get_latest_q = sub {
+    my ($epoch) = @_;
+    return undef unless defined $epoch;
+    return undef unless @quarter_epochs_sorted;
+    
+    my $k = int($epoch / 900) * 900;
+    return $quarter_hour_map{$k} if exists $quarter_hour_map{$k};
+    
+    # Forward-fill: use last available if we're past the end
+    return $quarter_hour_map{$quarter_epochs_sorted[-1]} if $epoch >= $quarter_epochs_sorted[-1];
+    
+    # Find the latest entry before this epoch
+    for (my $i = $#quarter_epochs_sorted; $i >= 0; $i--) {
+      my $e = $quarter_epochs_sorted[$i];
+      return $quarter_hour_map{$e} if $e <= $epoch;
+    }
+    
+    # Fallback to first entry
+    return $quarter_hour_map{$quarter_epochs_sorted[0]};
+  };
+  
+  # Helper to format local ISO with timezone
+  my $format_q_iso = sub {
+    my ($epoch) = @_;
+    my @lt = localtime($epoch);
+    my $iso = strftime('%Y-%m-%dT%H:%M:00', @lt);
+    my $tz = strftime('%z', @lt);
+    $tz =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
+    return $iso . $tz;
+  };
+  
+  my @intervals_filled;
+  for my $q_off (0..191) {  # 192 quarter-hours = 48 hours
+    my $t = $midnight_local_epoch + $q_off * 900;
+    my $start_iso = $format_q_iso->($t);
+    my $end_iso = $format_q_iso->($t + 900);
+    
+    my $src = $get_latest_q->($t);
+    
+    push @intervals_filled, {
+      start_timestamp => $start_iso,
+      end_timestamp => $end_iso,
+      chf_per_kwh_sum => ($src ? $src->{chf_per_kwh_sum} + 0 : 0),
+      chf_m_per_hour => ($src ? $src->{chf_m_per_hour} + 0 : 0),
+      total_chf => ($src ? $src->{total_chf} + 0 : 0),
+      month_hours_used => ($src ? $src->{month_hours_used} + 0 : 0),
+    };
+  }
+  
+  eval { LOGDEB("build_canonical_tariff_data: Built " . 
+    scalar(@intervals_raw) . " raw intervals, " .
+    scalar(keys %hourly_map) . " hourly entries, " .
+    scalar(@intervals_filled) . " filled intervals"); 1; };
+  
+  return {
+    intervals_raw => \@intervals_raw,
+    hourly_map => \%hourly_map,
+    hourly_list => \@hourly_list,
+    intervals_filled => \@intervals_filled,
+    quarter_hour_map => \%quarter_hour_map,
+    publication_timestamp => $publication_timestamp,
+  };
+}
+
 # ---- main ----
 
 my $cfg = eval { load_cfg() } // {};
@@ -276,181 +473,85 @@ my $pub_ts = $doc->{publication_timestamp} // '';
 eval { LOGINF("Total sorted intervals: " . scalar(@sorted)); 1; };
 
 # --------------------------
-# Build raw intervals and hourly aggregates
+# Build canonical tariff data
 # --------------------------
-my @intervals_raw;
-my %hour_groups;
+my $canonical = build_canonical_tariff_data(\@sorted, $pub_ts);
 
-for my $b (@sorted) {
-  my $start = $b->{start_timestamp} // next;
-  my $end = $b->{end_timestamp} // '';
+# Extract data for use in rest of script
+my $intervals_raw = $canonical->{intervals_raw};
+my $hourly_map = $canonical->{hourly_map};
+my $hourly_list = $canonical->{hourly_list};
+my $intervals_filled = $canonical->{intervals_filled};
 
-  my ($Y,$M) = (parse_ymdh($start))[0,1];
-  my $hours_in_month = days_in_month($Y,$M) * 24;
+# For backwards compatibility with existing code sections
+my @intervals_raw = @$intervals_raw;
+my @hourly_raw = @$hourly_list;
+my @intervals_filled = @$intervals_filled;
+my @hourly_filled;
 
-  my $kwh_total = kwh_total_for_block($b);
-  my $monthly_m = monthly_M_total_for_block($b);
-  my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
-  my $sum_total = $kwh_total + $fixed_per_hour;
-
-  my $hour_key = hour_start_from($start);
-
-  push @intervals_raw, {
-    start_timestamp => $start,
-    end_timestamp => $end,
-    chf_per_kwh_sum => $kwh_total,
-    chf_m_per_hour => $fixed_per_hour,
-    total_chf => $sum_total,
-    month_hours_used => $hours_in_month,
-  };
-
-  $hour_groups{$hour_key} ||= { n => 0, kwh_sum => 0, fixed_sum => 0, total_sum => 0 };
-  $hour_groups{$hour_key}{n} += 1;
-  $hour_groups{$hour_key}{kwh_sum} += $kwh_total;
-  $hour_groups{$hour_key}{fixed_sum} += $fixed_per_hour;
-  $hour_groups{$hour_key}{total_sum} += $sum_total;
+# Optional debug mode
+if ($debug_dump) {
+  my @epochs = sort { $a <=> $b } keys %$hourly_map;
+  my $first_epoch = @epochs ? $epochs[0] : 0;
+  my $last_epoch = @epochs ? $epochs[-1] : 0;
+  eval { LOGDEB("Canonical map debug: " . 
+    scalar(@$intervals_raw) . " raw intervals, " .
+    scalar(keys %$hourly_map) . " hourly entries, " .
+    "first epoch=" . $first_epoch . " (" . strftime('%Y-%m-%d %H:%M:%S', localtime($first_epoch)) . "), " .
+    "last epoch=" . $last_epoch . " (" . strftime('%Y-%m-%d %H:%M:%S', localtime($last_epoch)) . ")"); 1; };
 }
 
-my @hourly_raw;
-for my $hk (sort keys %hour_groups) {
-  my $g = $hour_groups{$hk};
-  my $n = $g->{n} || 1;
-  push @hourly_raw, {
-    hour_start => $hk,
-    avg_total_chf => $g->{total_sum} / $n,
-    avg_chf_per_kwh_sum => $g->{kwh_sum} / $n,
-    avg_chf_m_per_hour => $g->{fixed_sum} / $n,
-    intervals_count => $n,
-  };
-}
-
-# --------------------------
-# Forward-fill absolute outputs
-# --------------------------
-
-my %hour_epoch_map_ff;
-for my $h (@hourly_raw) {
-  next unless ref $h eq 'HASH' && defined $h->{hour_start};
-  my $e = _iso_to_epoch($h->{hour_start});
-  next unless defined $e;
-  my $k = int($e/3600)*3600;
-  $hour_epoch_map_ff{$k} = $h unless exists $hour_epoch_map_ff{$k};
-}
-my @hour_epochs_sorted_ff = sort { $a <=> $b } keys %hour_epoch_map_ff;
-
-my %q_epoch_map_ff;
-for my $it (@intervals_raw) {
-  next unless ref $it eq 'HASH' && defined $it->{start_timestamp};
-  my $e = _iso_to_epoch($it->{start_timestamp});
-  next unless defined $e;
-  my $k = int($e/900)*900;
-  $q_epoch_map_ff{$k} = $it unless exists $q_epoch_map_ff{$k};
-}
-my @q_epochs_sorted_ff = sort { $a <=> $b } keys %q_epoch_map_ff;
-
+# Build hourly_filled for 48 hours using canonical hourly_map
 my @lt_now = localtime(time);
 my $midnight_local_epoch = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
 
-if (@hour_epochs_sorted_ff == 0) {
+my @hour_epochs_sorted = sort { $a <=> $b } keys %$hourly_map;
+
+if (@hour_epochs_sorted == 0) {
   eval { LOGWARN("Midnight transition: No hourly data available"); 1; };
-} elsif ($midnight_local_epoch > $hour_epochs_sorted_ff[-1]) {
-  eval { LOGINF("Midnight transition detected: Using last available values"); 1; };
 }
 
-sub _latest_hour_before_or_at {
+# Helper to get hourly entry at or before epoch
+my $get_hourly_at = sub {
   my ($epoch) = @_;
   return undef unless defined $epoch;
-  return undef unless @hour_epochs_sorted_ff;
+  return undef unless @hour_epochs_sorted;
   
-  if ($epoch >= $hour_epochs_sorted_ff[-1]) {
-    return $hour_epoch_map_ff{$hour_epochs_sorted_ff[-1]};
+  my $k = int($epoch / 3600) * 3600;
+  return $hourly_map->{$k} if exists $hourly_map->{$k};
+  
+  # Forward-fill: use last available if past the end
+  return $hourly_map->{$hour_epochs_sorted[-1]} if $epoch >= $hour_epochs_sorted[-1];
+  
+  # Find latest entry before this epoch
+  for (my $i = $#hour_epochs_sorted; $i >= 0; $i--) {
+    my $e = $hour_epochs_sorted[$i];
+    return $hourly_map->{$e} if $e <= $epoch;
   }
   
-  for (my $i = $#hour_epochs_sorted_ff; $i >= 0; $i--) {
-    my $e = $hour_epochs_sorted_ff[$i];
-    return $hour_epoch_map_ff{$e} if $e <= $epoch;
-  }
+  # Fallback to first entry
+  return $hourly_map->{$hour_epochs_sorted[0]};
+};
+
+# Build hourly_filled for 48 hours
+for my $h_off (0..47) {
+  my $t = $midnight_local_epoch + $h_off * 3600;
   
-  return $hour_epoch_map_ff{$hour_epochs_sorted_ff[0]};
-}
-
-sub _latest_q_before_or_at {
-  my ($epoch) = @_;
-  return undef unless defined $epoch;
-  return undef unless @q_epochs_sorted_ff;
+  my @lt = localtime($t);
+  my $iso = strftime('%Y-%m-%dT%H:00:00', @lt);
+  my $tz = strftime('%z', @lt);
+  $tz =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
+  my $hour_start_iso = $iso . $tz;
   
-  if ($epoch >= $q_epochs_sorted_ff[-1]) {
-    return $q_epoch_map_ff{$q_epochs_sorted_ff[-1]};
-  }
+  my $src = $get_hourly_at->($t);
   
-  for (my $i = $#q_epochs_sorted_ff; $i >= 0; $i--) {
-    my $e = $q_epochs_sorted_ff[$i];
-    return $q_epoch_map_ff{$e} if $e <= $epoch;
-  }
-  
-  return $q_epoch_map_ff{$q_epochs_sorted_ff[0]};
-}
-
-sub _local_hour_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:00:00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
-sub _local_q_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:%M:00', localtime($t)); my $z=strftime('%z', localtime($t)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
-sub _local_q_end_iso { my ($t)=@_; my $d=strftime('%Y-%m-%dT%H:%M:00', localtime($t+900)); my $z=strftime('%z', localtime($t+900)); $z =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/; return $d.$z; }
-
-# --------------------------
-# Build filled hourly and intervals for 48 hours
-# --------------------------
-my @hourly_filled;
-for my $day_offset (0..0) {
-  my $day_midnight_epoch = $midnight_local_epoch + ($day_offset * 86400);
-  
-  for my $h_off (0..47) {  # 48 hours = today + tomorrow
-    my $t = $day_midnight_epoch + $h_off * 3600;
-    my $is = _local_hour_iso($t);
-    my $ke = _iso_to_epoch($is);
-    my $k = defined $ke ? int($ke/3600)*3600 : undef;
-
-    my $src = (defined $k && exists $hour_epoch_map_ff{$k}) ? $hour_epoch_map_ff{$k} : _latest_hour_before_or_at($ke);
-    my $avg_total = (defined $src && defined $src->{avg_total_chf}) ? 0 + $src->{avg_total_chf} : 0;
-    my $avg_kwh = (defined $src && defined $src->{avg_chf_per_kwh_sum}) ? 0 + $src->{avg_chf_per_kwh_sum} : 0;
-    my $avg_m = (defined $src && defined $src->{avg_chf_m_per_hour}) ? 0 + $src->{avg_chf_m_per_hour} : 0;
-    my $n_int = (defined $src && defined $src->{intervals_count}) ? 0 + $src->{intervals_count} : 0;
-
-    push @hourly_filled, {
-      hour_start => $is,
-      avg_total_chf => $avg_total,
-      avg_chf_per_kwh_sum => $avg_kwh,
-      avg_chf_m_per_hour => $avg_m,
-      intervals_count => $n_int,
-    };
-  }
-}
-
-my @intervals_filled;
-for my $day_offset (0..0) {
-  my $day_midnight_epoch = $midnight_local_epoch + ($day_offset * 86400);
-  
-  for my $q_off (0..191) {  # 192 = 48 hours * 4 intervals/hour
-    my $t = $day_midnight_epoch + $q_off * 900;
-    my $is = _local_q_iso($t);
-    my $ie = _local_q_end_iso($t);
-    my $ke = _iso_to_epoch($is);
-    my $k = defined $ke ? int($ke/900)*900 : undef;
-
-    my $src = (defined $k && exists $q_epoch_map_ff{$k}) ? $q_epoch_map_ff{$k} : _latest_q_before_or_at($ke);
-
-    my $tot = (defined $src && defined $src->{total_chf}) ? 0 + $src->{total_chf} : 0;
-    my $sum_kwh = (defined $src && defined $src->{chf_per_kwh_sum}) ? 0 + $src->{chf_per_kwh_sum} : 0;
-    my $m_per_h = (defined $src && defined $src->{chf_m_per_hour}) ? 0 + $src->{chf_m_per_hour} : 0;
-    my $mh_used = (defined $src && defined $src->{month_hours_used}) ? 0 + $src->{month_hours_used} : 0;
-
-    push @intervals_filled, {
-      start_timestamp => $is,
-      end_timestamp => $ie,
-      chf_per_kwh_sum => $sum_kwh,
-      chf_m_per_hour => $m_per_h,
-      total_chf => $tot,
-      month_hours_used => $mh_used,
-    };
-  }
+  push @hourly_filled, {
+    hour_start => $hour_start_iso,
+    avg_total_chf => ($src ? $src->{avg_total_chf} + 0 : 0),
+    avg_chf_per_kwh_sum => ($src ? $src->{avg_chf_per_kwh_sum} + 0 : 0),
+    avg_chf_m_per_hour => ($src ? $src->{avg_chf_m_per_hour} + 0 : 0),
+    intervals_count => ($src ? $src->{intervals_count} + 0 : 0),
+  };
 }
 
 # --------------------------
@@ -474,86 +575,14 @@ my $json_hourly = JSON::PP->new->canonical(1)->encode($hourly_msg);
 # Relative 24-hour view
 # --------------------------
 
-sub _add_blocks_to_map {
-  my ($doc, $map_ref) = @_;
-  return unless $doc;
-  
-  my $rows = $doc->{prices};
-  $rows = $doc->{rows} if !defined $rows;
-  
-  unless ($rows && ref($rows) eq 'ARRAY' && @$rows > 0) {
-    eval { LOGWARN("_add_blocks_to_map: No valid rows/prices array found"); 1; };
-    return;
-  }
-  
-  eval { LOGDEB("_add_blocks_to_map: Processing " . scalar(@$rows) . " blocks"); 1; };
-  
-  for my $b (@$rows) {
-    next unless ref($b) eq 'HASH';
-    my $start = $b->{start_timestamp};
-    next unless defined $start;
-    
-    my $hour_key = hour_start_from($start);
-    my $e = _iso_to_epoch($hour_key);
-    unless (defined $e) {
-      eval { LOGWARN("Could not parse epoch from hour_key: $hour_key"); 1; };
-      next;
-    }
-    
-    my $k = int($e/3600)*3600;
-    
-    unless (exists $map_ref->{$k}) {
-      $map_ref->{$k} = {
-        hour_start => $hour_key,
-        n => 0,
-        total_sum => 0,
-      };
-    }
-    
-    my ($Y,$M) = (parse_ymdh($start))[0,1];
-    my $hours_in_month = days_in_month($Y,$M) * 24;
-    my $kwh_total = kwh_total_for_block($b);
-    my $monthly_m = monthly_M_total_for_block($b);
-    my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
-    my $sum_total = $kwh_total + $fixed_per_hour;
-    
-    $map_ref->{$k}{n} += 1;
-    $map_ref->{$k}{total_sum} += $sum_total;
-  }
-  
-  for my $k (keys %$map_ref) {
-    my $entry = $map_ref->{$k};
-    my $n = $entry->{n} || 1;
-    $entry->{avg_total_chf} = $entry->{total_sum} / $n;
-    delete $entry->{n};
-    delete $entry->{total_sum};
-  }
-  
-  eval { LOGDEB("_add_blocks_to_map: Added " . scalar(keys %$map_ref) . " hours to map"); 1; };
-}
-
-my %hour_epoch_map_rel;
-
-if (! $today_doc) {
-  eval { LOGERR("Cannot build relative values: today's tariff data is missing"); 1; };
-} else {
-  eval { LOGINF("Loading today's data for relative view"); 1; };
-  _add_blocks_to_map($today_doc, \%hour_epoch_map_rel);
-  eval { LOGINF("Added " . scalar(keys %hour_epoch_map_rel) . " hours from today's data"); 1; };
-}
-
-if ($tomorrow_doc) {
-  eval { LOGINF("Loading tomorrow's data for relative view"); 1; };
-  _add_blocks_to_map($tomorrow_doc, \%hour_epoch_map_rel);
-  eval { LOGINF("Total " . scalar(keys %hour_epoch_map_rel) . " hours in relative map"); 1; };
-} else {
-  eval { LOGWARN("Tomorrow's tariff data not available yet"); 1; };
-}
-
+# Use canonical hourly_map for relative values
+my %hour_epoch_map_rel = %$hourly_map;
 my @hour_epochs_sorted_rel = sort { $a <=> $b } keys %hour_epoch_map_rel;
 
 if (@hour_epochs_sorted_rel == 0) {
   eval { LOGERR("CRITICAL: hour_epoch_map_rel is EMPTY! Cannot calculate relative values!"); 1; };
+} else {
+  eval { LOGDEB("Relative map: " . scalar(@hour_epochs_sorted_rel) . " hours from canonical data"); 1; };
 }
 
 sub _latest_value_before_or_at_rel {
@@ -573,7 +602,7 @@ sub _latest_value_before_or_at_rel {
   
   for (my $i = $#hour_epochs_sorted_rel; $i >= 0; $i--) {
     my $e = $hour_epochs_sorted_rel[$i];
-    if ($e < $epoch) {
+    if ($e <= $epoch) {
       my $h = $hour_epoch_map_rel{$e};
       my $v = defined $h->{avg_total_chf} ? 0 + $h->{avg_total_chf} : 0;
       return ($v, $h->{hour_start});
@@ -599,7 +628,7 @@ for my $off (0..23) {
   $offstr =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
   my $hs_iso_local = $hs_local . $offstr;
   
-  my $target_epoch = _iso_to_epoch($hs_iso_local);
+  my $target_epoch = $t;  # Use the normalized epoch directly instead of re-parsing
   
   my ($val, $val_hour_start) = _latest_value_before_or_at_rel($target_epoch);
   $val //= 0;
