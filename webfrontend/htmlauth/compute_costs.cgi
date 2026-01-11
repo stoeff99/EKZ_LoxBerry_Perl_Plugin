@@ -93,11 +93,12 @@ sub kwh_total_for_block {
   my $e_kwh = get_unit_value($b->{electricity}, 'CHF_kWh');
   my $g_kwh = get_unit_value($b->{grid}, 'CHF_kWh');
   my $r_kwh = get_unit_value($b->{regional_fees}, 'CHF_kWh');
+  my $metering_kwh = get_unit_value($b->{metering}, 'CHF_kWh');
   if ($e_kwh || $g_kwh) {
-    return $e_kwh + $g_kwh + $r_kwh;
+    return $e_kwh + $g_kwh + $r_kwh + $metering_kwh;
   } else {
     my $i_kwh = get_unit_value($b->{integrated}, 'CHF_kWh');
-    return $i_kwh + $r_kwh;
+    return $i_kwh + $r_kwh + $metering_kwh;
   }
 }
 
