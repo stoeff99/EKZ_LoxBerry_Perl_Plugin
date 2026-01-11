@@ -174,12 +174,62 @@ sub ensure_daily_rotation {
   }
 }
 
+sub verify_and_reformat_prices {
+  my ($doc) = @_;
+  my $prices = $doc->{prices} || $doc->{rows} || [];
+  
+  my @reformatted;
+  my $missing_count = 0;
+  
+  for my $i (0..$#{$prices}) {
+    my $p = $prices->[$i];
+    
+    # Check if all required fields exist
+    my $has_start = exists $p->{start_timestamp};
+    my $has_end = exists $p->{end_timestamp};
+    my $has_elec = exists $p->{electricity};
+    my $has_grid = exists $p->{grid};
+    my $has_integ = exists $p->{integrated};
+    my $has_regional = exists $p->{regional_fees};
+    
+    if (! $has_start || !$has_end || !$has_elec || !$has_grid || !$has_integ || ! $has_regional) {
+      $missing_count++;
+      eval { LOGWARN("Interval $i missing fields: " . 
+        "start=$has_start end=$has_end elec=$has_elec grid=$has_grid integ=$has_integ regional=$has_regional"); 1; };
+    }
+    
+    # Reformat in preferred order
+    push @reformatted, {
+      start_timestamp => $p->{start_timestamp},
+      end_timestamp => $p->{end_timestamp},
+      electricity => $p->{electricity},
+      grid => $p->{grid},
+      integrated => $p->{integrated},
+      regional_fees => $p->{regional_fees},
+    };
+  }
+  
+  eval { LOGINF("Verified " . scalar(@$prices) . " intervals, $missing_count had missing fields"); 1; };
+  
+  return \@reformatted;
+}
+
 # ---- main ----
 
 my $cfg = eval { load_cfg() } // {};
 
 # Read BOTH today and tomorrow data for absolute values
 my ($today_doc, $tomorrow_doc) = read_today_and_tomorrow_json();
+
+# Verify and reformat the data for troubleshooting
+if ($today_doc) {
+  $today_doc->{prices} = verify_and_reformat_prices($today_doc);
+  eval { LOGINF("Today's data verified and reformatted"); 1; };
+}
+if ($tomorrow_doc) {
+  $tomorrow_doc->{prices} = verify_and_reformat_prices($tomorrow_doc);
+  eval { LOGINF("Tomorrow's data verified and reformatted"); 1; };
+}
 
 # Use today as primary source
 my $doc = $today_doc;
