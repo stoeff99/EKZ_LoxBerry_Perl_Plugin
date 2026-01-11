@@ -20,6 +20,9 @@ my $BASEURL    = $lbpurl || do { (my $p = $ENV{SCRIPT_NAME}//'') =~ s{/[^/]+$}{}
 my $ASSET_BASE = "$BASEURL/assets";
 my $ICON_BASE  = "$BASEURL/Icons";
 
+# Safe escaped base for href attributes
+my $SAFE_BASEURL = CGI::escapeHTML($BASEURL);
+
 # Load shared helpers from common.pl (provides load_cfg())
 require "$FindBin::Bin/common.pl";
 
@@ -42,6 +45,35 @@ if ($@ || !defined $cfg || ref($cfg) ne 'HASH') {
   $cfg = {};
 }
 
+# Prepare escaped template variables and helpers to avoid @{[ ... ]} interpolation in heredoc
+my %esc;
+for my $k (qw/
+  auth_server_base realm client_id redirect_uri api_base ems_instance_id
+  scope response_mode timezone
+  mqtt_host mqtt_port mqtt_username
+  mqtt_topic_raw mqtt_topic_summary
+  mqtt_topic_intervals mqtt_topic_hourly
+  fallback_tariff_name token_store_path retries
+  influx_url influx_version influx_org influx_bucket influx_db influx_user
+/) {
+  $esc{$k} = h($cfg->{$k}//'');
+}
+my $checked_mqtt_enabled      = $cfg->{mqtt_enabled} ? 'checked' : '';
+my $checked_publish_relative  = $cfg->{publish_relative_hourly} ? 'checked' : '';
+my $checked_influx_enabled    = $cfg->{influx_enabled} ? 'checked' : '';
+
+# Select helpers for fetch schedule
+my $fs = $cfg->{fetch_schedule} // '';
+my $sel_schedule_1  = ($fs eq '1')  ? 'selected' : '';
+my $sel_schedule_2  = ($fs eq '2')  ? 'selected' : '';
+my $sel_schedule_12 = ($fs eq '12') ? 'selected' : '';
+my $sel_schedule_24 = ($fs eq '24') ? 'selected' : '';
+
+# Select helper for influx version
+my $iv = $cfg->{influx_version} // '2';
+my $sel_influx_v2 = ($iv eq '2') ? 'selected' : '';
+my $sel_influx_v1 = ($iv eq '1') ? 'selected' : '';
+
 # Handle POST to update config JSON (write back to $LBPDATADIR/ekz_config.json)
 my $msg = '';
 if ($q->request_method eq 'POST') {
@@ -52,6 +84,7 @@ if ($q->request_method eq 'POST') {
     mqtt_topic_raw mqtt_topic_summary
     mqtt_topic_intervals mqtt_topic_hourly
     fallback_tariff_name token_store_path fetch_schedule retries
+    influx_url influx_version influx_org influx_bucket influx_db influx_user
   /;
 
   # Update regular fields
@@ -60,8 +93,10 @@ if ($q->request_method eq 'POST') {
     $cfg->{$f} = defined $v ? $v : $cfg->{$f};
   }
 
-  # Boolean checkbox
+  # Boolean checkboxes
   $cfg->{mqtt_enabled} = $q->param('mqtt_enabled') ? JSON::PP::true : JSON::PP::false;
+  $cfg->{publish_relative_hourly} = $q->param('publish_relative_hourly') ? JSON::PP::true : JSON::PP::false;
+  $cfg->{influx_enabled} = $q->param('influx_enabled') ? JSON::PP::true : JSON::PP::false;
 
   # Sensitive fields: only update if non-empty
   if (defined $q->param('client_secret')) {
@@ -72,19 +107,39 @@ if ($q->request_method eq 'POST') {
     my $newpw = $q->param('mqtt_password');
     $cfg->{mqtt_password} = $newpw if defined $newpw && $newpw ne '';
   }
+  # Influx sensitive fields
+  if (defined $q->param('influx_token')) {
+    my $tok = $q->param('influx_token');
+    $cfg->{influx_token} = $tok if defined $tok && $tok ne '';
+  }
+  if (defined $q->param('influx_password')) {
+    my $pw = $q->param('influx_password');
+    $cfg->{influx_password} = $pw if defined $pw && $pw ne '';
+  }
 
-  # Write updated JSON
-  if (open my $fh, '>', $cfgfile) {
-    print $fh encode_json($cfg);
-    close $fh;
-    chmod 0640, $cfgfile;
-
-    my $ok = update_cron_schedule($cfg->{fetch_schedule});
+  # Write updated JSON using centralized function
+  if (write_json_file($cfgfile, $cfg, { mode => 0640 })) {
+    # Update cron wrappers. Pass the whole cfg hashref so update_cron_schedule can manage compute wrapper too.
+    my $ok = update_cron_schedule($cfg);
     $msg = $ok ? "<div class='alert alert-ok'>Settings saved. Cron schedule updated.</div>"
                : "<div class='alert alert-warn'>Settings saved but cron update failed. Check permissions.</div>";
   } else {
-    $msg = "<div class='alert alert-err'>Cannot write " . h($cfgfile) . ": " . h($!) . "</div>";
+    $msg = "<div class='alert alert-err'>Cannot write " . h($cfgfile) . "</div>";
   }
+
+  # Refresh escaped values and helpers after save so the form shows new values
+  for my $k (keys %esc) { $esc{$k} = h($cfg->{$k}//''); }
+  $checked_mqtt_enabled     = $cfg->{mqtt_enabled} ? 'checked' : '';
+  $checked_publish_relative = $cfg->{publish_relative_hourly} ? 'checked' : '';
+  $checked_influx_enabled   = $cfg->{influx_enabled} ? 'checked' : '';
+  $fs = $cfg->{fetch_schedule} // '';
+  $sel_schedule_1  = ($fs eq '1')  ? 'selected' : '';
+  $sel_schedule_2  = ($fs eq '2')  ? 'selected' : '';
+  $sel_schedule_12 = ($fs eq '12') ? 'selected' : '';
+  $sel_schedule_24 = ($fs eq '24') ? 'selected' : '';
+  $iv = $cfg->{influx_version} // '2';
+  $sel_influx_v2 = ($iv eq '2') ? 'selected' : '';
+  $sel_influx_v1 = ($iv eq '1') ? 'selected' : '';
 }
 
 # Render page using shared styles (same look as index.cgi)
@@ -107,11 +162,11 @@ print <<"HTML_HEAD";
   </div>
 
   <div class="nav-actions">
-    <a class="btn btn-primary" href="$SAFE_BASEURL/start.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
-    <a class="btn btn-green"   href="$SAFE_BASEURL/run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now</a>
-    <a class="btn btn-slate"   hhref="$SAFE_BASEURL/health.cgi"><span class="emoji">🩺</span> Health</a>
-    <a class="btn btn-primary" href="$SAFE_BASEURL/index.cgi"><span class="emoji">🏠</span> Home</a>
-    <a class="btn btn-primary" href="$SAFE_BASEURL/settings.cgi"><span class="emoji">⚙️</span> Settings</a>
+    <a class="btn btn-primary" href="start.cgi"><span class="emoji">🔐</span> Sign in (OIDC)</a>
+    <a class="btn btn-green"   href="run_rolling_fetch.cgi"><span class="emoji">⚡</span> Fetch now</a>
+    <a class="btn btn-slate"   href="health.cgi"><span class="emoji">🩺</span> Health</a>
+    <a class="btn btn-primary" href="index.cgi"><span class="emoji">🏠</span> Home</a>
+    <a class="btn btn-primary" href="settings.cgi"><span class="emoji">⚙️</span> Settings</a>
   </div>
 
   <div class="container">
@@ -122,101 +177,173 @@ print <<"HTML_HEAD";
         <fieldset>
           <legend>EKZ / OIDC</legend>
           <label>Auth server base</label>
-          <input name="auth_server_base" type="text" size="60" value="@{[ h($cfg->{auth_server_base}//'') ]}">
+          <input name="auth_server_base" type="text" size="60" value="$esc{auth_server_base}">
           <label>Realm</label>
-          <input name="realm" type="text" value="@{[ h($cfg->{realm}//'') ]}">
+          <input name="realm" type="text" value="$esc{realm}">
           <label>Client ID</label>
-          <input name="client_id" type="text" value="@{[ h($cfg->{client_id}//'') ]}">
+          <input name="client_id" type="text" value="$esc{client_id}">
           <label>Client secret <span class="small">(enter to update)</span></label>
           <input type="password" name="client_secret" placeholder="••••••••">
           <label>Redirect URI</label>
-          <input name="redirect_uri" type="text" size="80" value="@{[ h($cfg->{redirect_uri}//'') ]}">
+          <input name="redirect_uri" type="text" size="80" value="$esc{redirect_uri}">
           <div class="hint small">Example: https://your.host/admin/plugins/ekz_plugin/callback.cgi</div>
           <label>API base</label>
-          <input name="api_base" type="text" size="60" value="@{[ h($cfg->{api_base}//'') ]}">
+          <input name="api_base" type="text" size="60" value="$esc{api_base}">
           <label>EMS instance ID</label>
-          <input name="ems_instance_id" type="text" value="@{[ h($cfg->{ems_instance_id}//'') ]}">
+          <input name="ems_instance_id" type="text" value="$esc{ems_instance_id}">
           <label>Scope</label>
-          <input name="scope" type="text" value="@{[ h($cfg->{scope}//'') ]}">
+          <input name="scope" type="text" value="$esc{scope}">
           <label>Response mode</label>
-          <input name="response_mode" type="text" value="@{[ h($cfg->{response_mode}//'') ]}">
+          <input name="response_mode" type="text" value="$esc{response_mode}">
           <label>Timezone</label>
-          <input name="timezone" type="text" value="@{[ h($cfg->{timezone}//'') ]}">
+          <input name="timezone" type="text" value="$esc{timezone}">
         </fieldset>
 
         <fieldset>
           <legend>MQTT</legend>
-          <label><input type="checkbox" name="mqtt_enabled" @{[ $cfg->{mqtt_enabled} ? 'checked' : '' ]}> Enable MQTT</label>
+          <label><input type="checkbox" name="mqtt_enabled" $checked_mqtt_enabled> Enable MQTT</label>
           <label>Broker host</label>
-          <input name="mqtt_host" type="text" value="@{[ h($cfg->{mqtt_host}//'') ]}">
+          <input name="mqtt_host" type="text" value="$esc{mqtt_host}">
           <label>Broker port</label>
-          <input name="mqtt_port" type="text" value="@{[ h($cfg->{mqtt_port}//'') ]}">
+          <input name="mqtt_port" type="text" value="$esc{mqtt_port}">
           <label>Username (optional)</label>
-          <input name="mqtt_username" type="text" value="@{[ h($cfg->{mqtt_username}//'') ]}">
+          <input name="mqtt_username" type="text" value="$esc{mqtt_username}">
           <label>Password (optional) <span class="small">(enter to update)</span></label>
           <input type="password" name="mqtt_password" placeholder="••••••••">
           <div class="hr"></div>
           <label>Raw topic (legacy)</label>
-          <input name="mqtt_topic_raw" type="text" size="50" value="@{[ h($cfg->{mqtt_topic_raw}//'ekz/ems/tariffs/raw') ]}">
+          <input name="mqtt_topic_raw" type="text" size="50" value="$esc{mqtt_topic_raw}">
           <label>Summary topic (legacy)</label>
-          <input name="mqtt_topic_summary" type="text" size="50" value="@{[ h($cfg->{mqtt_topic_summary}//'ekz/ems/tariffs/now_plus_24h') ]}">
+          <input name="mqtt_topic_summary" type="text" size="50" value="$esc{mqtt_topic_summary}">
           <div class="hr"></div>
           <label>Intervals topic (computed 15‑min values)</label>
-          <input name="mqtt_topic_intervals" type="text" size="50" value="@{[ h($cfg->{mqtt_topic_intervals}//'ekz/ems/tariffs/intervals') ]}">
+          <input name="mqtt_topic_intervals" type="text" size="50" value="$esc{mqtt_topic_intervals}">
           <label>Hourly averages topic (computed hourly means)</label>
-          <input name="mqtt_topic_hourly" type="text" size="50" value="@{[ h($cfg->{mqtt_topic_hourly}//'ekz/ems/tariffs/hourly') ]}">
+          <input name="mqtt_topic_hourly" type="text" size="50" value="$esc{mqtt_topic_hourly}">
           <label>Fallback tariff name</label>
-          <input name="fallback_tariff_name" type="text" value="@{[ h($cfg->{fallback_tariff_name}//'') ]}">
+          <input name="fallback_tariff_name" type="text" value="$esc{fallback_tariff_name}">
+        </fieldset>
+
+        <fieldset>
+          <legend>InfluxDB</legend>
+          <label><input type="checkbox" name="influx_enabled" $checked_influx_enabled> Enable InfluxDB writes</label>
+
+          <label>Version</label>
+          <select name="influx_version" id="influx_version">
+            <option value="2" $sel_influx_v2>v2.x</option>
+            <option value="1" $sel_influx_v1>v1.x</option>
+          </select>
+
+          <label>URL</label>
+          <input name="influx_url" type="text" size="60" value="$esc{influx_url}" placeholder="http://influxvm:8086">
+
+          <div id="influx_v2_block">
+            <label>Organization</label>
+            <input name="influx_org" type="text" value="$esc{influx_org}" placeholder="your-org">
+            <label>Bucket</label>
+            <input name="influx_bucket" type="text" value="$esc{influx_bucket}" placeholder="ekz">
+            <label>Token <span class="small">(enter to update)</span></label>
+            <input type="password" name="influx_token" placeholder="••••••••">
+          </div>
+
+          <div id="influx_v1_block">
+            <label>Database</label>
+            <input name="influx_db" type="text" value="$esc{influx_db}" placeholder="ekz">
+            <label>Username (optional)</label>
+            <input name="influx_user" type="text" value="$esc{influx_user}">
+            <label>Password (optional) <span class="small">(enter to update)</span></label>
+            <input type="password" name="influx_password" placeholder="••••••••">
+          </div>
+
+          <div class="hint small">For InfluxDB v2, set URL + Org + Bucket + Token. For v1, set URL + DB (+ optional user/password).</div>
         </fieldset>
 
         <fieldset>
           <legend>Scheduling</legend>
           <label>Fetch frequency</label>
           <select name="fetch_schedule">
-            <option value="1"  @{[ ($cfg->{fetch_schedule}//'') eq '1'  ? 'selected' : '' ]}>1x per day (at 18:00)</option>
-            <option value="2"  @{[ ($cfg->{fetch_schedule}//'') eq '2'  ? 'selected' : '' ]}>2x per day (at 06:00 and 18:00)</option>
-            <option value="12" @{[ ($cfg->{fetch_schedule}//'') eq '12' ? 'selected' : '' ]}>12x per day (every 2 hours, even hours)</option>
-            <option value="24" @{[ ($cfg->{fetch_schedule}//'') eq '24' ? 'selected' : '' ]}>24x per day (every hour)</option>
+            <option value="1"  $sel_schedule_1>1x per day (at 18:00)</option>
+            <option value="2"  $sel_schedule_2>2x per day (at 06:00 and 18:00)</option>
+            <option value="12" $sel_schedule_12>12x per day (every 2 hours, even hours)</option>
+            <option value="24" $sel_schedule_24>24x per day (every hour)</option>
           </select>
           <div class="hint">After each fetch, computed costs are published to MQTT (intervals + hourly).</div>
+
+          <div style="margin-top:.5rem;">
+            <label><input type="checkbox" name="publish_relative_hourly" $checked_publish_relative> Publish relative 24h view hourly (compute_costs executed hourly)</label>
+            <div class="hint small">When enabled, a cron.hourly wrapper will be created to run compute_costs.cgi every hour and republish the relative +0..+23 topic.</div>
+          </div>
         </fieldset>
 
         <fieldset>
           <legend>Advanced</legend>
           <label>Token store path (optional)</label>
-          <input name="token_store_path" type="text" size="80" value="@{[ h($cfg->{token_store_path}//'') ]}">
+          <input name="token_store_path" type="text" size="80" value="$esc{token_store_path}">
           <div class="hint small">Example: /opt/loxberry/data/plugins/ekz_plugin/tokens.json</div>
           <label>Retries (HTTP/API)</label>
-          <input name="retries" type="text" value="@{[ h($cfg->{retries}//'3') ]}">
+          <input name="retries" type="text" value="$esc{retries}">
         </fieldset>
 
         <div class="hr"></div>
         <div class="actions">
           <button type="submit">Save</button>
-          <a href="$SAFE_BASEURL/index.cgi"><button class="btn-secondary" type="button">Back</button></a>
+          <a href="index.cgi"><button class="btn-secondary" type="button">Back</button></a>
         </div>
       </form>
     </div>
   </div>
+
+  <script>
+  // Simple toggler for Influx v1/v2 blocks
+  (function() {
+    const sel = document.getElementById('influx_version');
+    const v1  = document.getElementById('influx_v1_block');
+    const v2  = document.getElementById('influx_v2_block');
+    function apply() {
+      if (!sel || !v1 || !v2) return;
+      const val = sel.value || '2';
+      if (val === '1') { v1.style.display = ''; v2.style.display = 'none'; }
+      else             { v1.style.display = 'none'; v2.style.display = '';  }
+    }
+    if (sel) { sel.addEventListener('change', apply); apply(); }
+  })();
+  </script>
 </body>
 </html>
 HTML_HEAD
 
 # ----------------------------
-# Cron updater (kept as in your file)
+# Cron updater (updated to accept either $schedule or $cfg hashref and manage compute wrapper)
 # ----------------------------
 sub update_cron_schedule {
-  my ($schedule) = @_;
+  my ($cfg_or_schedule) = @_;
+
+  # Determine $schedule and whether relative hourly publish is enabled
+  my $schedule;
+  my $publish_relative = 0;
+  if (ref($cfg_or_schedule) eq 'HASH') {
+    $schedule = $cfg_or_schedule->{fetch_schedule} // '';
+    $publish_relative = $cfg_or_schedule->{publish_relative_hourly} ? 1 : 0;
+  } else {
+    $schedule = $cfg_or_schedule // '';
+    $publish_relative = 0;
+  }
 
   my $cron_file;
   my $cron_content;
 
   # Run CGI directly with Perl to avoid any web auth/session
-  my $run_cmd = "/usr/bin/env perl \"$lbphtmlauthdir/run_rolling_fetch.cgi\" >/dev/null 2>&1";
+  my $run_cmd     = "/usr/bin/env perl \"$lbphtmlauthdir/run_rolling_fetch.cgi\" >/dev/null 2>&1";
+  my $compute_cmd = "/usr/bin/env perl \"$lbphtmlauthdir/compute_costs.cgi\" >/dev/null 2>&1";
 
+  # Paths for wrappers
+  my $fetch_wrapper_name   = $lbpplugindir;
+  my $compute_wrapper_name = "${lbpplugindir}-compute";
+
+  # Decide fetch wrapper content based on schedule
   if ($schedule && $schedule eq '1') {
     # Once per day at 18:00
-    $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
+    $cron_file = "$lbhomedir/system/cron/cron.hourly/$fetch_wrapper_name";
     $cron_content = <<"BASH";
 #!/bin/bash
 HOUR=\$(date +\\%H)
@@ -227,7 +354,7 @@ BASH
   }
   elsif ($schedule && $schedule eq '2') {
     # Twice per day at 06:00 and 18:00
-    $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
+    $cron_file = "$lbhomedir/system/cron/cron.hourly/$fetch_wrapper_name";
     $cron_content = <<"BASH";
 #!/bin/bash
 HOUR=\$(date +\\%H)
@@ -238,7 +365,7 @@ BASH
   }
   elsif ($schedule && $schedule eq '12') {
     # Every 2 hours on even hours: 00, 02, 04, ...
-    $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
+    $cron_file = "$lbhomedir/system/cron/cron.hourly/$fetch_wrapper_name";
     $cron_content = <<"BASH";
 #!/bin/bash
 HOUR=\$(date +\\%H)
@@ -249,14 +376,14 @@ BASH
   }
   elsif ($schedule && $schedule eq '24') {
     # Every hour
-    $cron_file = "$lbhomedir/system/cron/cron.hourly/$lbpplugindir";
+    $cron_file = "$lbhomedir/system/cron/cron.hourly/$fetch_wrapper_name";
     $cron_content = <<"BASH";
 #!/bin/bash
 $run_cmd
 BASH
   }
   else {
-    # Disabled/invalid: remove existing wrappers
+    # Disabled/invalid schedule: remove fetch wrapper and compute wrapper
     my @cron_dirs = ("$lbhomedir/system/cron/cron.01min",
                      "$lbhomedir/system/cron/cron.03min",
                      "$lbhomedir/system/cron/cron.05min",
@@ -265,11 +392,63 @@ BASH
                      "$lbhomedir/system/cron/cron.30min",
                      "$lbhomedir/system/cron/cron.hourly",
                      "$lbhomedir/system/cron/cron.daily");
-    foreach my $dir (@cron_dirs) { unlink "$dir/$lbpplugindir" if -e "$dir/$lbpplugindir" }
+    foreach my $dir (@cron_dirs) {
+      unlink "$dir/$fetch_wrapper_name"   if -e "$dir/$fetch_wrapper_name";
+      unlink "$dir/$compute_wrapper_name" if -e "$dir/$compute_wrapper_name";
+    }
     return 0;
   }
 
-  # Clean up old locations (keep only the new one)
+  # Write or update fetch wrapper
+  eval {
+    open my $fh, '>', $cron_file or die "Cannot write $cron_file: $!";
+    print $fh $cron_content;
+    close $fh;
+    chmod 0755, $cron_file;
+    1;
+  } or do {
+    return 0;
+  };
+
+  # We'll place the compute wrapper into cron.01min so we can run it once per hour at minute :59.
+  my $compute_wrapper_path = "$lbhomedir/system/cron/cron.01min/$compute_wrapper_name";
+  if ($publish_relative) {
+    # The wrapper runs every minute (cron.01min). It checks the current minute and only runs
+    # compute_costs.cgi when minute == 59 so the relative payload represents the price "now" at :59.
+    my $compute_content = <<"BASH";
+#!/bin/bash
+# Run compute_costs.cgi only at minute 59 past the hour
+MIN=\$(date +\\%M)
+if [ "\$MIN" = "59" ]; then
+  $compute_cmd
+fi
+BASH
+    eval {
+      open my $cfh, '>', $compute_wrapper_path or die "Cannot write $compute_wrapper_path: $!";
+      print $cfh $compute_content;
+      close $cfh;
+      chmod 0755, $compute_wrapper_path;
+      1;
+    } or do {
+      # Unable to write compute wrapper; log and continue (we already created fetch wrapper)
+      return 0;
+    };
+  } else {
+    # Remove compute wrapper from all known cron dirs
+    my @cron_dirs_all = ("$lbhomedir/system/cron/cron.01min",
+                         "$lbhomedir/system/cron/cron.03min",
+                         "$lbhomedir/system/cron/cron.05min",
+                         "$lbhomedir/system/cron/cron.10min",
+                         "$lbhomedir/system/cron/cron.15min",
+                         "$lbhomedir/system/cron/cron.30min",
+                         "$lbhomedir/system/cron/cron.hourly",
+                         "$lbhomedir/system/cron/cron.daily");
+    foreach my $dir (@cron_dirs_all) {
+      unlink "$dir/$compute_wrapper_name" if -e "$dir/$compute_wrapper_name";
+    }
+  }
+
+  # Clean up old fetch wrapper locations (keep only the new one)
   my @all_dirs = ("$lbhomedir/system/cron/cron.01min",
                   "$lbhomedir/system/cron/cron.03min",
                   "$lbhomedir/system/cron/cron.05min",
@@ -280,19 +459,8 @@ BASH
                   "$lbhomedir/system/cron/cron.daily");
   foreach my $dir (@all_dirs) {
     next if $cron_file =~ /\Q$dir\E/;
-    unlink "$dir/$lbpplugindir" if -e "$dir/$lbpplugindir";
+    unlink "$dir/$fetch_wrapper_name" if -e "$dir/$fetch_wrapper_name";
   }
-
-  # Write wrapper
-  eval {
-    open my $fh, '>', $cron_file or die "Cannot write $cron_file: $!";
-    print $fh $cron_content;
-    close $fh;
-    chmod 0755, $cron_file;
-    1;
-  } or do {
-    return 0;
-  };
 
   return 1;
 }
