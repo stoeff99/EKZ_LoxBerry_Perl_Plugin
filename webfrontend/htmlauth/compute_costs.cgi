@@ -622,7 +622,7 @@ sub _latest_value_before_or_at_rel {
   
   for (my $i = $#hour_epochs_sorted_rel; $i >= 0; $i--) {
     my $e = $hour_epochs_sorted_rel[$i];
-    if ($e <= $epoch) {
+    if ($e <= $epoch) {  # Note: <= allows exact match (was < in old buggy code)
       my $h = $hourly_map->{$e};
       my $v = defined $h->{avg_total_chf} ? 0 + $h->{avg_total_chf} : 0;
       return ($v, $h->{hour_start_iso_local});
