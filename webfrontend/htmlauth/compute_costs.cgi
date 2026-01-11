@@ -196,7 +196,7 @@ sub verify_and_reformat_prices {
     my $has_regional = exists $p->{regional_fees};
     my $has_metering = exists $p->{metering};
     
-    if (! $has_start || !$has_end || !$has_elec || !$has_grid || !$has_integ || ! $has_regional || ! $metering) {
+    if (! $has_start || !$has_end || !$has_elec || !$has_grid || !$has_integ || ! $has_regional || ! $has_metering) {
       $missing_count++;
       eval { LOGWARN("Interval $i missing fields: " . 
         "start=$has_start end=$has_end elec=$has_elec grid=$has_grid integ=$has_integ regional=$has_regional metering=$has_metering"); 1; };
