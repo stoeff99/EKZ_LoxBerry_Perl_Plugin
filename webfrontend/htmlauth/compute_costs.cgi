@@ -611,31 +611,46 @@ sub _latest_value_before_or_at_rel {
   return (undef, undef);
 }
 
+# ----------------------------
+# Build relative array (modified to allow >24 hours when data is available)
+# ----------------------------
+
 my @relative;
-for my $off (0..23) {
-  my $now = time;
-  my $current_hour_epoch = int($now / 3600) * 3600;
-  my $minutes_into_hour = int(($now - $current_hour_epoch) / 60);
-  
-  if ($minutes_into_hour >= $HOUR_ROUNDING_THRESHOLD_MIN) {
-    $current_hour_epoch += 3600;
-  }
-  
+
+# Compute the current hour once and apply the 58/59-minute rounding rule
+my $now = time;
+my $current_hour_epoch = int($now / 3600) * 3600;
+my $minutes_into_hour = int(($now - $current_hour_epoch) / 60);
+if ($minutes_into_hour >= 58) {
+  $current_hour_epoch += 3600;
+}
+
+# Determine how many future hours we actually have data for (based on the hour map)
+# Ensure we produce at least 24 entries (offsets 0..23) for backward compatibility.
+my $last_available_epoch = @hour_epochs_sorted_rel ? $hour_epochs_sorted_rel[-1] : ($current_hour_epoch + 23 * 3600);
+my $max_off = int(($last_available_epoch - $current_hour_epoch) / 3600);
+$max_off = 23 if $max_off < 23;
+# Prevent negative or absurd values
+$max_off = 23 if $max_off < 0;
+
+for my $off (0 .. $max_off) {
+
   my $t = $current_hour_epoch + $off * 3600;
 
+  # Local ISO for this hour (+ offset like +01:00 or +02:00)
   my $hs_local = strftime('%Y-%m-%dT%H:00:00', localtime($t));
-  my $offstr = strftime('%z', localtime($t)); 
-  $offstr =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
+  my $offstr = strftime('%z', localtime($t)); $offstr =~ s/^([+\-])(\d{2})(\d{2})$/$1$2:$3/;
   my $hs_iso_local = $hs_local . $offstr;
   
-  my $target_epoch = $t;  # Use the normalized epoch directly instead of re-parsing
-  
+  my $target_epoch = _iso_to_epoch($hs_iso_local);
+  my $k = defined $target_epoch ? int($target_epoch/3600)*3600 : undef;
+
   my ($val, $val_hour_start) = _latest_value_before_or_at_rel($target_epoch);
   $val //= 0;
 
   push @relative, {
-    offset => $off,
-    hour_start => $hs_iso_local,
+    offset        => $off,
+    hour_start    => $hs_iso_local,   # local hour with offset
     avg_total_chf => $val,
   };
 }
