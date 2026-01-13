@@ -615,10 +615,14 @@ my $ok = eval {
   write_json_file($target_file, $norm);
   save_raw_payload($cfg, $rid, 'normalized', $norm);
 
-  # Also maintain tariffs_latest.json for backward compatibility (always write today's data if available)
+  # Also maintain tariffs_latest.json for backward compatibility
   my $latest = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
   if ($want_today) {
-    write_json_file($latest, $norm);
+      write_json_file($latest, $norm);
+  } else {
+      # When fetching tomorrow, update tariffs_latest.json with tomorrow's data
+      # so compute_costs.cgi has access to the full today+tomorrow dataset
+      write_json_file($latest, $norm);
   }
 
   # Record last successful fetch
