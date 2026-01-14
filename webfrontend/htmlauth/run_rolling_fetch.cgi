@@ -407,32 +407,6 @@ my $ok = eval {
   my $now_hour = $lt[2];   # 0.. 23
   my $now_min  = $lt[1];   # 0..59
 
-  # Rotate files at midnight if needed
-  if ($now_hour == 0) {
-    my $today_file = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
-    my $tomorrow_file = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
-    
-    if (-f $tomorrow_file) {
-      # Copy tomorrow to today (overwrite if exists)
-      if (open my $src, '<', $tomorrow_file) {
-        local $/ = undef;
-        my $content = <$src>;
-        close $src;
-        if (open my $dst, '>', $today_file) {
-          print $dst $content;
-          close $dst;
-          chmod 0640, $today_file;
-          LOGINF("Rotated tariffs_tomorrow.json -> tariffs_today.json at midnight");
-        } else {
-          LOGWARN("Failed to write to $today_file during rotation:  $!");
-        }
-      } else {
-        LOGWARN("Failed to read $tomorrow_file during rotation: $!");
-      }
-      unlink $tomorrow_file or LOGWARN("Failed to delete $tomorrow_file after rotation: $!");
-    }
-  }
-
   if (! $want_today) {
     if ($force && $now_hour < 18) {
       $want_today = 1;
