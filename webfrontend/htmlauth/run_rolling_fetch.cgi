@@ -404,6 +404,32 @@ my $ok = eval {
   my ($start_iso, $end_iso);
   my $now = localtime($now_epoch);
 
+   # Rotate files at midnight if needed
+  if ($now_hour == 0) {
+    my $today_file = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
+    my $tomorrow_file = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
+    
+    if (-f $tomorrow_file) {
+      # Copy tomorrow to today (overwrite if exists)
+      if (open my $src, '<', $tomorrow_file) {
+        local $/ = undef;
+        my $content = <$src>;
+        close $src;
+        if (open my $dst, '>', $today_file) {
+          print $dst $content;
+          close $dst;
+          chmod 0640, $today_file;
+          LOGINF("Rotated tariffs_tomorrow.json -> tariffs_today.json at midnight");
+        } else {
+          LOGWARN("Failed to write to $today_file during rotation:  $!");
+        }
+      } else {
+        LOGWARN("Failed to read $tomorrow_file during rotation: $!");
+      }
+      unlink $tomorrow_file or LOGWARN("Failed to delete $tomorrow_file after rotation: $!");
+    }
+  }
+
   if ($want_today) {
     LOGINF("Building TODAY window (00:00..24:00 local)");
     my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
