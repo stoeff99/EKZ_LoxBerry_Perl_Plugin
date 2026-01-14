@@ -10,3 +10,4 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
 # m h dom mon dow user  command
 0   *  * * *   loxberry        echo "Do something funny" > /dev/null 2>&1
+0 * * * loxberry /usr/bin/perl <LBPBIN>/rotate_tariffs.pl > /dev/null 2>&1
