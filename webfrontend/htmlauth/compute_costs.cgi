@@ -470,7 +470,7 @@ my $cfg = eval { load_cfg() } // {};
 # Both relative and absolute computations must use the same "now" to avoid
 # mismatches at 23:59 when relative shows 00:00 but absolute still uses 23:xx.
 my $now = time;
-my $minutes_into_hour = int(($now - int($now/3600)*3600)/60);
+my $minutes_into_hour = int(($now % 3600) / 60);
 if ($minutes_into_hour >= 58) {
   $now += 3600;
   eval { LOGINF("compute_costs: rounding 'now' forward due to minute >= 58, using now=%d", $now); 1; };
