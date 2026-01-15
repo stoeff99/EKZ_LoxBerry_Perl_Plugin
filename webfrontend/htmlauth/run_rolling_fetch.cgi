@@ -124,6 +124,15 @@ sub normalize_prices_doc {
   return \%doc;
 }
 
+sub write_json_file {
+  my ($path, $doc) = @_;
+  my $json = JSON::PP->new->pretty(1)->encode($doc);
+  open my $fh, '>', $path or die "Cannot write $path: $!";
+  print $fh $json;
+  close $fh;
+  chmod 0640, $path;
+}
+
 # --------------------------
 # Helpers: values and fallback checks
 # --------------------------
@@ -334,16 +343,13 @@ sub save_fetch_record {
 # --------------------------
 # Main
 # --------------------------
-
-# Set timezone globally at startup
-my $STARTUP_CFG = eval { load_cfg() };
-if ($STARTUP_CFG && $STARTUP_CFG->{timezone}) {
-  $ENV{TZ} = $STARTUP_CFG->{timezone};
-  POSIX::tzset();
-}
-
 my $ok = eval {
   my $cfg = load_cfg();
+
+  # Ensure schedule checks use configured timezone (e.g., Europe/Zurich)
+  if ($cfg->{timezone}) {
+    local $ENV{TZ} = $cfg->{timezone};
+  }
 
   # Add a request correlation id for tracing
   my $rid = sprintf('%d-%d', time, $$);
@@ -434,7 +440,7 @@ my $ok = eval {
       return 1;
     }
     LOGINF("Building NEXT-DAY window (tomorrow 00:00..24:00 local)");
-    ($start_iso, $end_iso) = build_tomorrow_window();
+    ($start_iso, $end_iso) = build_scheduled_window();
 
     if (! $force && $now_hour < 18) {
       log_event($cfg, $rid, 'skip', { reason => 'not_published_yet', current_hour => $now_hour });

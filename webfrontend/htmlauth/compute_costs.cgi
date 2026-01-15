@@ -28,13 +28,54 @@ my $debug_dump = ($q->param('debug_dump') // '') ne '' ? 1 : 0;
 
 # ---- helpers ----
 
+sub read_latest_json {
+  my $path = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
+  unless (-f $path) {
+    return ($path, undef, { error => "not_found", message => "No tariffs_latest.json in $lbpdatadir" });
+  }
+  open my $fh, '<', $path or return ($path, undef, { error => "open_failed", message => "Cannot open $path: $!" });
+  local $/ = undef;
+  my $raw = <$fh>;
+  close $fh;
+  my $doc = eval { JSON::PP->new->decode($raw) };
+  if (!$doc) {
+    return ($path, undef, { error => "invalid_json", message => "Could not parse tariffs_latest.json" });
+  }
+  return ($path, $doc, undef);
+}
+
 sub read_today_and_tomorrow_json {
   my $today_path = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
   my $tomorrow_path = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
   my $latest_path = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
   
-  my $today_doc = read_json_file($today_path, { silent => 1 });
-  my $tomorrow_doc = read_json_file($tomorrow_path, { silent => 1 });
+  my ($today_doc, $tomorrow_doc);
+  
+  # Read today's data
+  if (-f $today_path) {
+    if (open my $fh, '<', $today_path) {
+      local $/ = undef;
+      my $raw = <$fh>;
+      close $fh;
+      $today_doc = eval { JSON::PP->new->decode($raw) };
+      eval { LOGWARN("Failed to parse $today_path: $@"); 1; } if $@;
+    } else {
+      eval { LOGWARN("Failed to open $today_path: $!"); 1; };
+    }
+  }
+  
+  # Read tomorrow's data
+  if (-f $tomorrow_path) {
+    if (open my $fh, '<', $tomorrow_path) {
+      local $/ = undef;
+      my $raw = <$fh>;
+      close $fh;
+      $tomorrow_doc = eval { JSON::PP->new->decode($raw) };
+      eval { LOGWARN("Failed to parse $tomorrow_path: $@"); 1; } if $@;
+    } else {
+      eval { LOGWARN("Failed to open $tomorrow_path: $!"); 1; };
+    }
+  }
   
   if (!$today_doc && -f $latest_path) {
     eval { LOGWARN("tariffs_today.json missing, using tariffs_latest.json as fallback"); 1; };
@@ -177,6 +218,8 @@ sub ensure_daily_rotation {
     close $mf;
     chmod 0640, $marker_file;
   }
+
+  return $ok ? 1 : 0;
 }
 
 sub verify_and_reformat_prices {
