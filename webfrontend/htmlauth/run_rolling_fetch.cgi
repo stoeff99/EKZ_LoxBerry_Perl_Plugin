@@ -56,7 +56,7 @@ sub _norm_unit_name {
   my ($u) = @_;
   return 'CHF_kWh' if defined $u && lc($u) eq 'chf_kwh';
   return 'CHF_M'   if defined $u && lc($u) eq 'chf_m';
-  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]? kwh$/;
+  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]?kwh$/;
   return 'CHF_M'   if defined $u && lc($u) =~ /^chf[_-]?m$/;
   return $u // 'CHF_kWh';
 }
@@ -101,7 +101,7 @@ sub normalize_prices_doc {
   my ($payload) = @_;
 
   my $rows = $payload->{prices};
-  $rows = $payload->{rows} if ! defined $rows;
+  $rows = $payload->{rows} if !defined $rows;
   $rows ||= [];
 
   my @sorted = sort {
@@ -111,7 +111,7 @@ sub normalize_prices_doc {
   my @out = map { _ordered_block($_) } @sorted;
 
   my $pub = $payload->{publication_timestamp};
-  if (! defined $pub || $pub eq '') {
+  if (!defined $pub || $pub eq '') {
     $pub = strftime('%Y-%m-%dT%H:%M:%S', localtime) . _tz_offset_colon();
   }
 
@@ -124,8 +124,17 @@ sub normalize_prices_doc {
   return \%doc;
 }
 
+sub write_json_file {
+  my ($path, $doc) = @_;
+  my $json = JSON::PP->new->pretty(1)->encode($doc);
+  open my $fh, '>', $path or die "Cannot write $path: $!";
+  print $fh $json;
+  close $fh;
+  chmod 0640, $path;
+}
+
 # --------------------------
-# Helpers:  values and fallback checks
+# Helpers: values and fallback checks
 # --------------------------
 sub _value_for_unit {
   my ($arr, $unit) = @_;
@@ -334,16 +343,13 @@ sub save_fetch_record {
 # --------------------------
 # Main
 # --------------------------
-
-# Set timezone globally at startup
-my $STARTUP_CFG = eval { load_cfg() };
-if ($STARTUP_CFG && $STARTUP_CFG->{timezone}) {
-  $ENV{TZ} = $STARTUP_CFG->{timezone};
-  POSIX::tzset();
-}
-
 my $ok = eval {
   my $cfg = load_cfg();
+
+  # Ensure schedule checks use configured timezone (e.g., Europe/Zurich)
+  if ($cfg->{timezone}) {
+    local $ENV{TZ} = $cfg->{timezone};
+  }
 
   # Add a request correlation id for tracing
   my $rid = sprintf('%d-%d', time, $$);
@@ -357,14 +363,14 @@ my $ok = eval {
 
   log_event($cfg, $rid, 'start', {
     schedule    => $schedule,
-    force       => ($force ?  JSON::PP::true :  JSON::PP::false),
+    force       => ($force ? JSON::PP::true :  JSON::PP::false),
     param_today => ($want_today ? JSON::PP::true : JSON::PP::false),
     grace_minutes => $grace,
   });
 
   my $last_file = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
 
-  if (! $force) {
+  if (!$force) {
     if (($schedule // '') eq '1') {
       if (-f $last_file) {
         if (open my $lf, '<', $last_file) {
@@ -434,7 +440,7 @@ my $ok = eval {
       return 1;
     }
     LOGINF("Building NEXT-DAY window (tomorrow 00:00..24:00 local)");
-    ($start_iso, $end_iso) = build_tomorrow_window();
+    ($start_iso, $end_iso) = build_scheduled_window();
 
     if (! $force && $now_hour < 18) {
       log_event($cfg, $rid, 'skip', { reason => 'not_published_yet', current_hour => $now_hour });
