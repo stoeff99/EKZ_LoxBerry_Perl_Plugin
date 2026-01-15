@@ -101,7 +101,7 @@ sub normalize_prices_doc {
   my ($payload) = @_;
 
   my $rows = $payload->{prices};
-  $rows = $payload->{rows} if ! defined $rows;
+  $rows = $payload->{rows} if !defined $rows;
   $rows ||= [];
 
   my @sorted = sort {
@@ -111,7 +111,7 @@ sub normalize_prices_doc {
   my @out = map { _ordered_block($_) } @sorted;
 
   my $pub = $payload->{publication_timestamp};
-  if (! defined $pub || $pub eq '') {
+  if (!defined $pub || $pub eq '') {
     $pub = strftime('%Y-%m-%dT%H:%M:%S', localtime) . _tz_offset_colon();
   }
 
@@ -125,7 +125,7 @@ sub normalize_prices_doc {
 }
 
 # --------------------------
-# Helpers:  values and fallback checks
+# Helpers: values and fallback checks
 # --------------------------
 sub _value_for_unit {
   my ($arr, $unit) = @_;
@@ -357,14 +357,14 @@ my $ok = eval {
 
   log_event($cfg, $rid, 'start', {
     schedule    => $schedule,
-    force       => ($force ?  JSON::PP::true :  JSON::PP::false),
+    force       => ($force ? JSON::PP::true :  JSON::PP::false),
     param_today => ($want_today ? JSON::PP::true : JSON::PP::false),
     grace_minutes => $grace,
   });
 
   my $last_file = File::Spec->catfile($lbpdatadir, 'last_fetch.json');
 
-  if (! $force) {
+  if (!$force) {
     if (($schedule // '') eq '1') {
       if (-f $last_file) {
         if (open my $lf, '<', $last_file) {
