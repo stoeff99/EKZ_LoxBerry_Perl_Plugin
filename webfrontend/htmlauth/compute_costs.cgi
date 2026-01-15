@@ -268,7 +268,7 @@ sub verify_and_reformat_prices {
 # Canonical tariff data builder
 # --------------------------
 sub build_canonical_tariff_data {
-  my ($merged_rows, $publication_timestamp) = @_;
+  my ($merged_rows, $publication_timestamp, $now_ref) = @_;
   
   # Sort input rows by start timestamp
   my @sorted = sort {
@@ -389,7 +389,7 @@ sub build_canonical_tariff_data {
   }
   
   # Build intervals_filled with forward-fill logic for 48 hours
-  my @lt_now = localtime(time);
+  my @lt_now = localtime($now_ref);
   my $midnight_local_epoch = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
   
   my @quarter_epochs_sorted = sort { $a <=> $b } keys %quarter_hour_map;
@@ -464,6 +464,18 @@ sub build_canonical_tariff_data {
 
 my $cfg = eval { load_cfg() } // {};
 
+# --------------------------
+# Canonical "now" reference with >=58-minute rounding
+# --------------------------
+# Both relative and absolute computations must use the same "now" to avoid
+# mismatches at 23:59 when relative shows 00:00 but absolute still uses 23:xx.
+my $now = time;
+my $minutes_into_hour = int(($now % 3600) / 60);
+if ($minutes_into_hour >= 58) {
+  $now += 3600;
+  eval { LOGINF("compute_costs: rounding 'now' forward due to minute >= 58, using now=%d", $now); 1; };
+}
+
 # Read BOTH today and tomorrow data for absolute values
 my ($today_doc, $tomorrow_doc) = read_today_and_tomorrow_json();
 
@@ -518,7 +530,7 @@ eval { LOGINF("Total sorted intervals: " . scalar(@sorted)); 1; };
 # --------------------------
 # Build canonical tariff data
 # --------------------------
-my $canonical = build_canonical_tariff_data(\@sorted, $pub_ts);
+my $canonical = build_canonical_tariff_data(\@sorted, $pub_ts, $now);
 
 # Extract data for use in rest of script
 my $intervals_raw = $canonical->{intervals_raw};
@@ -545,7 +557,7 @@ if ($debug_dump) {
 }
 
 # Build hourly_filled for 48 hours using canonical hourly_map
-my @lt_now = localtime(time);
+my @lt_now = localtime($now);
 my $midnight_local_epoch = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
 
 my @hour_epochs_sorted = sort { $a <=> $b } keys %$hourly_map;
@@ -660,13 +672,8 @@ sub _latest_value_before_or_at_rel {
 
 my @relative;
 
-# Compute the current hour once and apply the 58/59-minute rounding rule
-my $now = time;
+# Use canonical $now (already rounded if minutes >= 58)
 my $current_hour_epoch = int($now / 3600) * 3600;
-my $minutes_into_hour = int(($now - $current_hour_epoch) / 60);
-if ($minutes_into_hour >= 58) {
-  $current_hour_epoch += 3600;
-}
 
 # Determine how many future hours we actually have data for (based on the hour map)
 # Ensure we produce at least 24 entries (offsets 0..23) for backward compatibility.
@@ -700,7 +707,7 @@ for my $off (0 .. $max_off) {
 
 my $relative_msg = {
   publication_timestamp => $pub_ts,
-  reference_time => strftime('%Y-%m-%dT%H:%M:%S', localtime(time)),
+  reference_time => strftime('%Y-%m-%dT%H:%M:%S', localtime($now)),
   relative => \@relative,
 };
 my $json_relative = JSON::PP->new->canonical(1)->encode($relative_msg);
@@ -715,7 +722,7 @@ my $topic_relative = $cfg->{mqtt_topic_relative} // 'ekz/ems/tariffs/relative';
 my ($pub_intervals_ok, $pub_hourly_ok, $pub_relative_ok) = (0, 0, 0);
 
 if (! $nopublish) {
-  my @lt_now = localtime(time);
+  my @lt_now = localtime($now);
   my $today_start = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
   my $today_end = $today_start + $WINDOW_END_OFFSET_SEC;
   
