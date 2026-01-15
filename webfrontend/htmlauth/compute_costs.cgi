@@ -297,8 +297,18 @@ for my $it (@intervals_raw) {
 }
 my @q_epochs_sorted_ff = sort { $a <=> $b } keys %q_epoch_map_ff;
 
-# Local midnight for "today"
-my @lt_now = localtime(time);
+# Compute canonical "now" with 58-minute rounding rule
+# If at minute 58 or 59, round up to next hour for consistency across relative and absolute publishes
+my $now = time;
+my $current_hour_epoch = int($now / 3600) * 3600;
+my $minutes_into_hour = int(($now - $current_hour_epoch) / 60);
+if ($minutes_into_hour >= 58) {
+  $now += 3600;
+  eval { LOGDBG("Applied 58-minute rounding: bumped reference time forward by 1 hour (minutes_into_hour=$minutes_into_hour)"); 1; };
+}
+
+# Local midnight for "today" using the rounded "now"
+my @lt_now = localtime($now);
 my $midnight_local_epoch = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
 
 # Detect midnight transition: today's midnight is after all available data
@@ -527,17 +537,8 @@ sub _latest_value_before_or_at_rel {
 
 my @relative;
 for my $off (0..23) {
-  # Get current time, round to nearest hour considering the 58-minute threshold
-  my $now = time;
+  # Use the canonical rounded $now computed earlier for consistency
   my $current_hour_epoch = int($now / 3600) * 3600;
-  my $minutes_into_hour = int(($now - $current_hour_epoch) / 60);
-  
-  # If at minute 58 or 59, round up to next hour for the "now" reference point
-  # This ensures relative offset 0 shows the upcoming hour's price
-  if ($minutes_into_hour >= 58) {
-    $current_hour_epoch += 3600;
-  }
-  
   my $t = $current_hour_epoch + $off * 3600;
 
   # Local ISO for this hour (+ offset like +01:00 or +02:00)
@@ -560,7 +561,7 @@ for my $off (0..23) {
 
 my $relative_msg = {
   publication_timestamp => $pub_ts,
-  reference_time        => strftime('%Y-%m-%dT%H:%M:%S', localtime(time)),
+  reference_time        => strftime('%Y-%m-%dT%H:%M:%S', localtime($now)),
   relative              => \@relative,
 };
 my $json_relative = JSON::PP->new->canonical(1)->encode($relative_msg);
@@ -582,7 +583,8 @@ if (!$nopublish) {
   # Add time check to prevent overwriting today's data with tomorrow's data
   # Only publish absolute values (intervals/hourly) at 23:59 or during hour 0 (00:00-00:59)
   # This prevents publishing when tomorrow's data is in tariffs_latest.json (18:00-23:58)
-  my ($hour, $min) = (localtime(time))[2,1];
+  # Use the same rounded $now as for midnight_local_epoch to ensure consistency
+  my ($hour, $min) = (localtime($now))[2,1];
   my $allow_absolute_publish = ($hour == 23 && $min >= 59) || ($hour == 0);
   
   if ($allow_absolute_publish) {
