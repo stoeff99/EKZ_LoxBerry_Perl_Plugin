@@ -56,7 +56,7 @@ sub _norm_unit_name {
   my ($u) = @_;
   return 'CHF_kWh' if defined $u && lc($u) eq 'chf_kwh';
   return 'CHF_M'   if defined $u && lc($u) eq 'chf_m';
-  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]? kwh$/;
+  return 'CHF_kWh' if defined $u && lc($u) =~ /^chf[_-]?kwh$/;
   return 'CHF_M'   if defined $u && lc($u) =~ /^chf[_-]?m$/;
   return $u // 'CHF_kWh';
 }
