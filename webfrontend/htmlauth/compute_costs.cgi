@@ -489,6 +489,19 @@ my @hourly_raw = @$hourly_list;
 my @intervals_filled = @$intervals_filled;
 my @hourly_filled;
 
+# --------------------------
+# Canonical "now" with >=58-minute rounding
+# --------------------------
+# Apply the rounding once here so both relative and absolute outputs use the same timestamp
+my $now = time;
+my $current_hour_epoch = int($now / 3600) * 3600;
+my $minutes_into_hour = int(($now - $current_hour_epoch) / 60);
+if ($minutes_into_hour >= 58) {
+  $current_hour_epoch += 3600;
+  $now = $current_hour_epoch;
+  eval { LOGINF("compute_costs: rounded 'now' forward due to minute >=%d; using now=%d", $minutes_into_hour, $now); 1; };
+}
+
 # Optional debug mode
 if ($debug_dump) {
   my @epochs = sort { $a <=> $b } keys %$hourly_map;
@@ -502,7 +515,7 @@ if ($debug_dump) {
 }
 
 # Build hourly_filled for 48 hours using canonical hourly_map
-my @lt_now = localtime(time);
+my @lt_now = localtime($now);
 my $midnight_local_epoch = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
 
 my @hour_epochs_sorted = sort { $a <=> $b } keys %$hourly_map;
@@ -617,14 +630,6 @@ sub _latest_value_before_or_at_rel {
 
 my @relative;
 
-# Compute the current hour once and apply the 58/59-minute rounding rule
-my $now = time;
-my $current_hour_epoch = int($now / 3600) * 3600;
-my $minutes_into_hour = int(($now - $current_hour_epoch) / 60);
-if ($minutes_into_hour >= 58) {
-  $current_hour_epoch += 3600;
-}
-
 # Determine how many future hours we actually have data for (based on the hour map)
 # Ensure we produce at least 24 entries (offsets 0..23) for backward compatibility.
 my $last_available_epoch = @hour_epochs_sorted_rel ? $hour_epochs_sorted_rel[-1] : ($current_hour_epoch + 23 * 3600);
@@ -657,7 +662,7 @@ for my $off (0 .. $max_off) {
 
 my $relative_msg = {
   publication_timestamp => $pub_ts,
-  reference_time => strftime('%Y-%m-%dT%H:%M:%S', localtime(time)),
+  reference_time => strftime('%Y-%m-%dT%H:%M:%S', localtime($now)),
   relative => \@relative,
 };
 my $json_relative = JSON::PP->new->canonical(1)->encode($relative_msg);
@@ -672,7 +677,7 @@ my $topic_relative = $cfg->{mqtt_topic_relative} // 'ekz/ems/tariffs/relative';
 my ($pub_intervals_ok, $pub_hourly_ok, $pub_relative_ok) = (0, 0, 0);
 
 if (! $nopublish) {
-  my @lt_now = localtime(time);
+  my @lt_now = localtime($now);
   my $today_start = timelocal(0, 0, 0, $lt_now[3], $lt_now[4], $lt_now[5]);
   my $today_end = $today_start + $WINDOW_END_OFFSET_SEC;
   
