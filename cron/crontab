@@ -9,4 +9,4 @@ SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
 # m h dom mon dow user  command
-40 12 * * * loxberry /usr/bin/perl $LBPBIN/rotate_tariffs.pl 2>&1
+55 12 * * * loxberry /usr/bin/perl $LBPBIN/ekz_plugin/rotate_tariffs.pl 2>&1
