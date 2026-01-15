@@ -15,6 +15,25 @@ require "$FindBin::Bin/common.pl";
 
 our ($lbpdatadir, $lbpurl, $lbptemplatedir, $lbplogdir);
 
+# Import constants from common.pl
+our (
+  $EVENT_LOG_RETENTION_DAYS,
+  $GRACE_PERIOD_DEFAULT_MIN,
+  $INTEGRATED_NONZERO_THRESHOLD,
+  $REGIONAL_FEE_FALLBACK_KWH,
+  $RAW_LOG_RETENTION_DAYS,
+  $FETCH_RECORDS_RING_SIZE,
+  $INFLUX_WRITE_TIMEOUT_SEC,
+  $TOKEN_EXPIRY_BUFFER_SEC,
+  $TOKEN_DEFAULT_EXPIRES_SEC,
+  $HTTP_TIMEOUT_SEC,
+  $HTTP_RETRY_BASE_SLEEP_SEC,
+  $HTTP_RETRY_BACKOFF_FACTOR,
+  $WINDOW_END_OFFSET_SEC,
+  $HOUR_ROUNDING_THRESHOLD_MIN,
+  $COMPUTE_CRON_MINUTE,
+);
+
 my $q = CGI->new;
 print $q->header('application/json; charset=utf-8');
 
@@ -31,7 +50,7 @@ my $log = LoxBerry::Log->new(
 LOGSTART("run_rolling_fetch started");
 
 # --------------------------
-# Helpers: normalization
+# Helpers:   normalization
 # --------------------------
 sub _norm_unit_name {
   my ($u) = @_;
@@ -67,6 +86,7 @@ sub _ordered_block {
     grid            => _ordered_cost_array($p->{grid}),
     integrated      => _ordered_cost_array($p->{integrated}),
     regional_fees   => _ordered_cost_array($p->{regional_fees}),
+    metering        => _ordered_cost_array($p->{metering}),
   );
   return \%o;
 }
@@ -248,7 +268,7 @@ sub log_event {
     chmod 0640, $path;
   }
   # Retention
-  my $days = int($cfg->{fetch_event_retain_days} // 14);
+  my $days = int($cfg->{fetch_event_retain_days} // $EVENT_LOG_RETENTION_DAYS);
   _cleanup_old_files($lbplogdir, 'fetch_events-', $days);
 }
 
@@ -265,7 +285,7 @@ sub save_raw_payload {
     close $fh;
     chmod 0640, $path;
   }
-  my $days = int($cfg->{fetch_raw_retain_days} // 7);
+  my $days = int($cfg->{fetch_raw_retain_days} // $RAW_LOG_RETENTION_DAYS);
   _cleanup_old_files($raw_dir, '', $days);
   return $path;
 }
@@ -285,12 +305,12 @@ sub save_fetch_record {
       chmod 0750, $records_dir;
     }
     
-    # Rotate existing files: 09→delete, 08→09, ..., 01→02, 00→01
+    # Rotate existing files:  09→delete, 08→09, .. ., 01→02, 00→01
     # Start from the oldest (09) and work backwards
     my $oldest_file = File::Spec->catfile($records_dir, 'fetch_record_09.json');
     unlink $oldest_file if -f $oldest_file;
     
-    # Rotate files 08→09, 07→08, ..., 00→01
+    # Rotate files 08→09, 07→08, .. ., 00→01
     for (my $i = 8; $i >= 0; $i--) {
       my $old_num = sprintf('%02d', $i);
       my $new_num = sprintf('%02d', $i + 1);
@@ -338,12 +358,12 @@ my $ok = eval {
   my $want_today = ($q->param('today') // '') eq '1' ? 1 : 0;
   my $schedule   = $cfg->{fetch_schedule} // '1';
 
-  # Configurable grace minutes (default: 5)
-  my $grace = int($cfg->{publish_grace_minutes} // 5);
+  # Configurable grace minutes (default:  5)
+  my $grace = int($cfg->{publish_grace_minutes} // $GRACE_PERIOD_DEFAULT_MIN);
 
   log_event($cfg, $rid, 'start', {
     schedule    => $schedule,
-    force       => ($force ? JSON::PP::true : JSON::PP::false),
+    force       => ($force ? JSON::PP::true :  JSON::PP::false),
     param_today => ($want_today ? JSON::PP::true : JSON::PP::false),
     grace_minutes => $grace,
   });
@@ -361,7 +381,7 @@ my $ok = eval {
           my $last_ts = $j->{last_success_epoch};
           if (defined $last_ts && same_calendar_day(time, $last_ts)) {
             log_event($cfg, $rid, 'skip', { reason => 'already_fetched_today', last_success_epoch => $last_ts });
-            LOGINF("Skipped fetch: already fetched today (once-per-day schedule)");
+            LOGINF("Skipped fetch:  already fetched today (once-per-day schedule)");
             print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'already_fetched_today' });
             return 1;
           }
@@ -379,21 +399,21 @@ my $ok = eval {
 
     unless ($allowed) {
       log_event($cfg, $rid, 'skip', { reason => 'not_scheduled_now', current_hour => $hour, schedule => $schedule });
-      LOGINF("Skipped fetch: not scheduled now (hour=$hour schedule=$schedule)");
+      LOGINF("Skipped fetch:  not scheduled now (hour=$hour schedule=$schedule)");
       print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_scheduled_now', hour => $hour, schedule => $schedule });
       return 1;
     }
   } else {
-    LOGINF("Force fetch requested via ?force=1");
+    LOGINF("Force fetch requested via ? force=1");
   }
 
   # Decide TODAY (<18:00) vs NEXT-DAY (>=18:00), with grace period at 18:00
   my $now_epoch = time();
   my @lt = localtime($now_epoch);
-  my $now_hour = $lt[2];   # 0..23
+  my $now_hour = $lt[2];   # 0.. 23
   my $now_min  = $lt[1];   # 0..59
 
-  if (!$want_today) {
+  if (! $want_today) {
     if ($force && $now_hour < 18) {
       $want_today = 1;
     } elsif ($now_hour < 18) {
@@ -402,47 +422,15 @@ my $ok = eval {
   }
 
   my ($start_iso, $end_iso);
-  my $now = localtime($now_epoch);
-
-   # Rotate files at midnight if needed
-  if ($now_hour == 0) {
-    my $today_file = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
-    my $tomorrow_file = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
-    
-    if (-f $tomorrow_file) {
-      # Copy tomorrow to today (overwrite if exists)
-      if (open my $src, '<', $tomorrow_file) {
-        local $/ = undef;
-        my $content = <$src>;
-        close $src;
-        if (open my $dst, '>', $today_file) {
-          print $dst $content;
-          close $dst;
-          chmod 0640, $today_file;
-          LOGINF("Rotated tariffs_tomorrow.json -> tariffs_today.json at midnight");
-        } else {
-          LOGWARN("Failed to write to $today_file during rotation:  $!");
-        }
-      } else {
-        LOGWARN("Failed to read $tomorrow_file during rotation: $!");
-      }
-      unlink $tomorrow_file or LOGWARN("Failed to delete $tomorrow_file after rotation: $!");
-    }
-  }
 
   if ($want_today) {
-    LOGINF("Building TODAY window (00:00..24:00 local)");
-    my $start = Time::Piece->strptime($now->strftime('%Y-%m-%d') . ' 00:00:00', '%Y-%m-%d %H:%M:%S');
-    my $end   = $start + 24*3600 - 1;  # exclusive end to avoid 97 rows
-    my $off = $now->strftime('%z');            # e.g. +0100
-    $off =~ s/^([+-])(\d{2})(\d{2})$/$1$2:$3/; # +0100 -> +01:00
-    $start_iso = $start->strftime('%Y-%m-%dT%H:%M:%S') . $off;
-    $end_iso   = $end->strftime('%Y-%m-%dT%H:%M:%S') . $off;
+    LOGINF("Building TODAY window (00:00.. 24:00 local)");
+    ($start_iso, $end_iso) = build_today_window();
     log_event($cfg, $rid, 'window', { kind => 'today', from => $start_iso, to => $end_iso });
   } else {
     if ($now_hour == 18 && $now_min < $grace) {
       log_event($cfg, $rid, 'skip', { reason => 'within_grace_period', minute => $now_min, grace_minutes => $grace });
-      LOGINF("Skipping next-day fetch: within grace period (minute=%d grace=%d)", $now_min, $grace);
+      LOGINF("Skipping next-day fetch:  within grace period (minute=%d grace=%d)", $now_min, $grace);
       print JSON::PP->new->encode({
         skipped        => JSON::PP::true,
         reason         => 'within_grace_period',
@@ -454,7 +442,7 @@ my $ok = eval {
     LOGINF("Building NEXT-DAY window (tomorrow 00:00..24:00 local)");
     ($start_iso, $end_iso) = build_scheduled_window();
 
-    if (!$force && $now_hour < 18) {
+    if (! $force && $now_hour < 18) {
       log_event($cfg, $rid, 'skip', { reason => 'not_published_yet', current_hour => $now_hour });
       LOGINF("Skipping next-day fetch: not published yet (local hour=%d)", $now_hour);
       print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_published_yet', hour => $now_hour });
@@ -467,14 +455,14 @@ my $ok = eval {
   my ($link_status, $link_url) = try_ensure_linked($cfg);
   if ($link_status eq 'not_signed_in') {
     log_event($cfg, $rid, 'error', { reason => 'not_signed_in' });
-    print encode_json({ error => 'not_signed_in', message => 'User not signed in. Please sign in via the plugin UI.' });
+    print encode_json({ error => 'not_signed_in', message => 'User not signed in.  Please sign in via the plugin UI.' });
     return 1;
   }
   if ($link_status eq 'link_required') {
     log_event($cfg, $rid, 'error', { reason => 'link_required', link => $link_url });
     print encode_json({
       error => 'link_required',
-      message => 'EMS is not linked to customer account. Redirect customer to linking flow.',
+      message => 'EMS is not linked to customer account.  Redirect customer to linking flow.',
       linking_process_redirect_uri => $link_url,
     });
     return 1;
@@ -493,10 +481,10 @@ my $ok = eval {
   # Track metadata for ring buffer
   my $initial_source = $source // 'unknown';
   my $fallback_applied = 0;
-  my $window_kind = $want_today ? 'today' : 'nextday';
+  my $window_kind = $want_today ? 'today' :  'nextday';
 
   # Next-day fallback to public tariffs if integrated CHF_kWh mostly zero after 18:00
-  my $is_nextday = !$want_today;
+  my $is_nextday = ! $want_today;
   if (defined $payload && ref($payload) eq 'HASH' && $is_nextday && $now_hour >= 18) {
     my $rows_for_check = $payload->{rows} // $payload->{prices} // [];
     my $share = integrated_nonzero_share($rows_for_check);
@@ -507,7 +495,7 @@ my $ok = eval {
     });
     save_raw_payload($cfg, $rid, 'raw_customer', $payload);
 
-    if ($share < 0.90) {
+    if ($share < $INTEGRATED_NONZERO_THRESHOLD) {
       my $base = $cfg->{api_base};
       my $tariff_name = $cfg->{fallback_tariff_name} // 'integrated_400D';
       LOGINF(sprintf("customerTariffs integrated CHF_kWh mostly zero (share=%.2f). Falling back to public tariff_name=%s", $share, $tariff_name));
@@ -524,14 +512,14 @@ my $ok = eval {
       };
       if ($ok_pub && defined $pub_payload && ref($pub_payload) eq 'HASH') {
         # Apply fixed regional fee to integrated for fallback result
-        my $fee_kwh = ($cfg->{fallback_regional_fee_kwh} // 0.0016) + 0;
-        my $zero_reg = !!($cfg->{fallback_zero_regional_when_applied} // JSON::PP::true);
+        my $fee_kwh = ($cfg->{fallback_regional_fee_kwh} // $REGIONAL_FEE_FALLBACK_KWH) + 0;
+        my $zero_reg = !! ($cfg->{fallback_zero_regional_when_applied} // JSON::PP::true);
         $pub_payload = apply_fixed_regional_fee_to_integrated($pub_payload, $fee_kwh, $zero_reg);
 
         $payload = $pub_payload;
         $source  = 'public';
         $fallback_applied = 1;
-        LOGINF("Applied public fallback tariffs and folded regional fee (%.4f CHF/kWh) into integrated%s.",
+        LOGINF("Applied public fallback tariffs and folded regional fee (%. 4f CHF/kWh) into integrated%s.",
           $fee_kwh, ($zero_reg ? " (regional CHF_kWh zeroed)" : ""));
         save_raw_payload($cfg, $rid, 'raw_public_fallback', $payload);
         log_event($cfg, $rid, 'fallback_applied', {
@@ -539,7 +527,7 @@ my $ok = eval {
           zero_regional => ($zero_reg ? JSON::PP::true : JSON::PP::false),
         });
       } else {
-        LOGERR("Public fallback tariffs failed; keeping customerTariffs payload. Error: " . ($@ // 'unknown'));
+        LOGERR("Public fallback tariffs failed; keeping customerTariffs payload.  Error: " . ($@ // 'unknown'));
         log_event($cfg, $rid, 'fallback_failed', { error => ($@ // 'unknown') });
       }
     } else {
@@ -557,7 +545,7 @@ my $ok = eval {
     }
   }
 
-  if (!defined $payload || ref($payload) ne 'HASH') {
+  if (! defined $payload || ref($payload) ne 'HASH') {
     my $msg = "Unexpected response from fetch_window";
     LOGERR($msg);
     log_event($cfg, $rid, 'error', { reason => 'invalid_fetch_response' });
@@ -580,14 +568,41 @@ my $ok = eval {
   } else {
     $target_file = File::Spec->catfile($lbpdatadir, 'tariffs_tomorrow.json');
     LOGINF("Saving NEXT-DAY data to tariffs_tomorrow.json");
+    
+    # FIX: Ensure tariffs_today.json exists when fetching tomorrow's data
+    # This is critical for compute_costs.cgi to build correct relative values
+    my $today_file = File::Spec->catfile($lbpdatadir, 'tariffs_today.json');
+    my $latest_file = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
+    if (!-f $today_file && -f $latest_file) {
+      LOGINF("tariffs_today.json missing during tomorrow fetch, copying from tariffs_latest.json");
+      if (open my $src, '<', $latest_file) {
+        local $/ = undef;
+        my $content = <$src>;
+        close $src;
+        if (open my $dst, '>', $today_file) {
+          print $dst $content;
+          close $dst;
+          chmod 0640, $today_file;
+          LOGINF("Successfully created tariffs_today.json from tariffs_latest.json");
+        } else {
+          LOGWARN("Failed to write $today_file: $!");
+        }
+      } else {
+        LOGWARN("Failed to read $latest_file: $!");
+      }
+    }
   }
   write_json_file($target_file, $norm);
   save_raw_payload($cfg, $rid, 'normalized', $norm);
 
-  # Also maintain tariffs_latest.json for backward compatibility (always write today's data if available)
+  # Also maintain tariffs_latest.json for backward compatibility
   my $latest = File::Spec->catfile($lbpdatadir, 'tariffs_latest.json');
   if ($want_today) {
-    write_json_file($latest, $norm);
+      write_json_file($latest, $norm);
+  } else {
+      # When fetching tomorrow, update tariffs_latest.json with tomorrow's data
+      # so compute_costs.cgi has access to the full today+tomorrow dataset
+      write_json_file($latest, $norm);
   }
 
   # Record last successful fetch
@@ -647,7 +662,7 @@ my $ok = eval {
     request_id   => $rid,
     fetch_metadata => {
       schedule       => $schedule,
-      force          => ($force ? JSON::PP::true : JSON::PP::false),
+      force          => ($force ? JSON::PP::true :  JSON::PP::false),
       param_today    => (($q->param('today') // '') eq '1' ? JSON::PP::true : JSON::PP::false),
       grace_minutes  => $grace,
     },
@@ -673,7 +688,7 @@ my $ok = eval {
   return 1;
 };
 
-if (!$ok) {
+if (! $ok) {
   my $err = $@ // 'Unknown exception';
   eval {
     my $logfile = File::Spec->catfile($lbpdatadir, 'fetch.log');

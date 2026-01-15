@@ -13,6 +13,53 @@ use File::Path qw(make_path);
 use FindBin;
 use URI::Escape qw(uri_escape_utf8);
 
+# --------------------------
+# Constants
+# --------------------------
+use constant {
+  # Token management
+  TOKEN_EXPIRY_BUFFER_SEC    => 30,     # Buffer before token expiry to trigger refresh
+  TOKEN_DEFAULT_EXPIRES_SEC  => 300,    # Default token lifetime if not specified by server
+  
+  # HTTP settings
+  HTTP_TIMEOUT_SEC           => 30,     # HTTP request timeout
+  HTTP_RETRY_BASE_SLEEP_SEC  => 1,      # Base sleep duration between retries
+  HTTP_RETRY_BACKOFF_FACTOR  => 2,      # Exponential backoff multiplier
+  
+  # Time windows
+  WINDOW_END_OFFSET_SEC      => (24*3600 - 1),  # Offset for end of day window (23:59:59)
+  GRACE_PERIOD_DEFAULT_MIN   => 5,      # Default grace period at 18:00 for next-day fetch
+  HOUR_ROUNDING_THRESHOLD_MIN => 58,    # Minute threshold for rounding to next hour
+  COMPUTE_CRON_MINUTE        => 59,     # Minute when compute cron job runs
+  
+  # Thresholds
+  INTEGRATED_NONZERO_THRESHOLD => 0.90, # Threshold for integrated tariff validity check
+  REGIONAL_FEE_FALLBACK_KWH    => 0.0016, # Fallback regional fee in CHF/kWh
+  
+  # Logging and archival
+  EVENT_LOG_RETENTION_DAYS   => 14,     # Days to retain event logs
+  RAW_LOG_RETENTION_DAYS     => 7,      # Days to retain raw API response logs
+  FETCH_RECORDS_RING_SIZE    => 10,     # Number of fetch records to keep in ring buffer
+  INFLUX_WRITE_TIMEOUT_SEC   => 20,     # Timeout for InfluxDB writes
+};
+
+# Export constants for scripts that require this file
+our $EVENT_LOG_RETENTION_DAYS        = EVENT_LOG_RETENTION_DAYS;
+our $GRACE_PERIOD_DEFAULT_MIN        = GRACE_PERIOD_DEFAULT_MIN;
+our $INTEGRATED_NONZERO_THRESHOLD    = INTEGRATED_NONZERO_THRESHOLD;
+our $REGIONAL_FEE_FALLBACK_KWH       = REGIONAL_FEE_FALLBACK_KWH;
+our $RAW_LOG_RETENTION_DAYS          = RAW_LOG_RETENTION_DAYS;
+our $FETCH_RECORDS_RING_SIZE         = FETCH_RECORDS_RING_SIZE;
+our $INFLUX_WRITE_TIMEOUT_SEC        = INFLUX_WRITE_TIMEOUT_SEC;
+our $TOKEN_EXPIRY_BUFFER_SEC         = TOKEN_EXPIRY_BUFFER_SEC;
+our $TOKEN_DEFAULT_EXPIRES_SEC       = TOKEN_DEFAULT_EXPIRES_SEC;
+our $HTTP_TIMEOUT_SEC                = HTTP_TIMEOUT_SEC;
+our $HTTP_RETRY_BASE_SLEEP_SEC       = HTTP_RETRY_BASE_SLEEP_SEC;
+our $HTTP_RETRY_BACKOFF_FACTOR       = HTTP_RETRY_BACKOFF_FACTOR;
+our $WINDOW_END_OFFSET_SEC           = WINDOW_END_OFFSET_SEC;
+our $HOUR_ROUNDING_THRESHOLD_MIN     = HOUR_ROUNDING_THRESHOLD_MIN;
+our $COMPUTE_CRON_MINUTE             = COMPUTE_CRON_MINUTE;
+
 # SDK globals under strict
 our ($lbpdatadir, $lbpurl, $lbptemplatedir);
 
