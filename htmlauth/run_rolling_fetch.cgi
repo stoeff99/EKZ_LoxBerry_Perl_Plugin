@@ -385,8 +385,8 @@ my $ok = eval {
 
     my $hour = (localtime(time))[2];
     my $allowed = 0;
-    if    ($schedule eq '1')  { $allowed = ($hour >= 18) ? 1 : 0; }   # any time after 18:00
-    elsif ($schedule eq '2')  { $allowed = ($hour == 6 || $hour == 18) ? 1 : 0; }
+    if    ($schedule eq '1')  { $allowed = ($hour >= 19) ? 1 : 0; }   # any time after 19:00
+    elsif ($schedule eq '2')  { $allowed = ($hour == 6 || $hour == 19) ? 1 : 0; }
     elsif ($schedule eq '12') { $allowed = ($hour % 2 == 0) ? 1 : 0; }
     elsif ($schedule eq '24') { $allowed = 1; }
     else                      { $allowed = 0; }
