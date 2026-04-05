@@ -401,16 +401,16 @@ my $ok = eval {
     LOGINF("Force fetch requested via ? force=1");
   }
 
-  # Decide TODAY (<18:00) vs NEXT-DAY (>=18:00), with grace period at 18:00
+  # Decide TODAY (<19:00) vs NEXT-DAY (>=19:00), with grace period at 19:00
   my $now_epoch = time();
   my @lt = localtime($now_epoch);
   my $now_hour = $lt[2];   # 0.. 23
   my $now_min  = $lt[1];   # 0..59
 
   if (! $want_today) {
-    if ($force && $now_hour < 18) {
+    if ($force && $now_hour < 19) {
       $want_today = 1;
-    } elsif ($now_hour < 18) {
+    } elsif ($now_hour < 19) {
       $want_today = 1;
     }
   }
