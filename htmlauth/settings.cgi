@@ -262,8 +262,8 @@ print <<"HTML_HEAD";
           <legend>Scheduling</legend>
           <label>Fetch frequency</label>
           <select name="fetch_schedule">
-            <option value="1"  $sel_schedule_1>1x per day (at 18:00)</option>
-            <option value="2"  $sel_schedule_2>2x per day (at 06:00 and 18:00)</option>
+            <option value="1"  $sel_schedule_1>1x per day (at 19:00)</option>
+            <option value="2"  $sel_schedule_2>2x per day (at 06:00 and 19:00)</option>
             <option value="12" $sel_schedule_12>12x per day (every 2 hours, even hours)</option>
             <option value="24" $sel_schedule_24>24x per day (every hour)</option>
           </select>
