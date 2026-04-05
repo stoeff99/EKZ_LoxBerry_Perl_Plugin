@@ -422,7 +422,7 @@ my $ok = eval {
     ($start_iso, $end_iso) = build_today_window();
     log_event($cfg, $rid, 'window', { kind => 'today', from => $start_iso, to => $end_iso });
   } else {
-    if ($now_hour == 18 && $now_min < $grace) {
+    if ($now_hour == 19 && $now_min < $grace) {
       log_event($cfg, $rid, 'skip', { reason => 'within_grace_period', minute => $now_min, grace_minutes => $grace });
       LOGINF("Skipping next-day fetch:  within grace period (minute=%d grace=%d)", $now_min, $grace);
       print JSON::PP->new->encode({
@@ -436,7 +436,7 @@ my $ok = eval {
     LOGINF("Building NEXT-DAY window (tomorrow 00:00..24:00 local)");
     ($start_iso, $end_iso) = build_tomorrow_window();
 
-    if (! $force && $now_hour < 18) {
+    if (! $force && $now_hour < 19) {
       log_event($cfg, $rid, 'skip', { reason => 'not_published_yet', current_hour => $now_hour });
       LOGINF("Skipping next-day fetch: not published yet (local hour=%d)", $now_hour);
       print JSON::PP->new->encode({ skipped => JSON::PP::true, reason => 'not_published_yet', hour => $now_hour });
@@ -477,9 +477,9 @@ my $ok = eval {
   my $fallback_applied = 0;
   my $window_kind = $want_today ? 'today' :  'nextday';
 
-  # Next-day fallback to public tariffs if integrated CHF_kWh mostly zero after 18:00
+  # Next-day fallback to public tariffs if integrated CHF_kWh mostly zero after 19:00
   my $is_nextday = ! $want_today;
-  if (defined $payload && ref($payload) eq 'HASH' && $is_nextday && $now_hour >= 18) {
+  if (defined $payload && ref($payload) eq 'HASH' && $is_nextday && $now_hour >= 19) {
     my $rows_for_check = $payload->{rows} // $payload->{prices} // [];
     my $share = integrated_nonzero_share($rows_for_check);
     log_event($cfg, $rid, 'fetched', {
@@ -528,7 +528,7 @@ my $ok = eval {
       save_raw_payload($cfg, $rid, 'raw_customer', $payload);
     }
   } else {
-    # Non-nextday or before 18:00: still record the fetch
+    # Non-nextday or before 19:00: still record the fetch
     if (defined $payload && ref($payload) eq 'HASH') {
       my $rows_for_check = $payload->{rows} // $payload->{prices} // [];
       log_event($cfg, $rid, 'fetched', {
