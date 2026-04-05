@@ -262,8 +262,8 @@ print <<"HTML_HEAD";
           <legend>Scheduling</legend>
           <label>Fetch frequency</label>
           <select name="fetch_schedule">
-            <option value="1"  $sel_schedule_1>1x per day (at 18:00)</option>
-            <option value="2"  $sel_schedule_2>2x per day (at 06:00 and 18:00)</option>
+            <option value="1"  $sel_schedule_1>1x per day (at 19:00)</option>
+            <option value="2"  $sel_schedule_2>2x per day (at 06:00 and 19:00)</option>
             <option value="12" $sel_schedule_12>12x per day (every 2 hours, even hours)</option>
             <option value="24" $sel_schedule_24>24x per day (every hour)</option>
           </select>
@@ -342,23 +342,23 @@ sub update_cron_schedule {
 
   # Decide fetch wrapper content based on schedule
   if ($schedule && $schedule eq '1') {
-    # Once per day at 18:00
+    # Once per day at 19:00
     $cron_file = "$lbhomedir/system/cron/cron.hourly/$fetch_wrapper_name";
     $cron_content = <<"BASH";
 #!/bin/bash
 HOUR=\$(date +\\%H)
-if [[ "\$HOUR" == "18" ]]; then
+if [[ "\$HOUR" == "19" ]]; then
   $run_cmd
 fi
 BASH
   }
   elsif ($schedule && $schedule eq '2') {
-    # Twice per day at 06:00 and 18:00
+    # Twice per day at 06:00 and 19:00
     $cron_file = "$lbhomedir/system/cron/cron.hourly/$fetch_wrapper_name";
     $cron_content = <<"BASH";
 #!/bin/bash
 HOUR=\$(date +\\%H)
-if [[ "\$HOUR" == "06" || "\$HOUR" == "18" ]]; then
+if [[ "\$HOUR" == "06" || "\$HOUR" == "19" ]]; then
   $run_cmd
 fi
 BASH
