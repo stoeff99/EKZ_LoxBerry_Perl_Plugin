@@ -225,7 +225,7 @@ sub verify_and_reformat_prices {
 # Canonical tariff data builder
 # --------------------------
 sub build_canonical_tariff_data {
-  my ($merged_rows, $publication_timestamp) = @_;
+  my ($merged_rows, $publication_timestamp, $include_fixed) = @_;
   
   # Sort input rows by start timestamp
   my @sorted = sort {
@@ -255,7 +255,11 @@ sub build_canonical_tariff_data {
     my $kwh_total = kwh_total_for_block($b);
     my $monthly_m = monthly_M_total_for_block($b);
     my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
-    my $sum_total = $kwh_total + $fixed_per_hour;
+    # Fixed monthly fees (CHF_M) are a per-month charge, independent of consumption.
+    # Converting them to CHF/hour and adding that to a CHF/kWh price mixes units and
+    # shifts every interval up by a constant (~0.011 CHF for 8 CHF/month). EKZ/Loxone
+    # show the pure energy price, so by default total_chf = sum of CHF_kWh components.
+    my $sum_total = $kwh_total + ($include_fixed ? $fixed_per_hour : 0);
     
     my $entry = {
       start_epoch => $start_epoch + 0,
@@ -300,7 +304,11 @@ sub build_canonical_tariff_data {
     my $kwh_total = kwh_total_for_block($b);
     my $monthly_m = monthly_M_total_for_block($b);
     my $fixed_per_hour = $hours_in_month ? ($monthly_m / $hours_in_month) : 0;
-    my $sum_total = $kwh_total + $fixed_per_hour;
+    # Fixed monthly fees (CHF_M) are a per-month charge, independent of consumption.
+    # Converting them to CHF/hour and adding that to a CHF/kWh price mixes units and
+    # shifts every interval up by a constant (~0.011 CHF for 8 CHF/month). EKZ/Loxone
+    # show the pure energy price, so by default total_chf = sum of CHF_kWh components.
+    my $sum_total = $kwh_total + ($include_fixed ? $fixed_per_hour : 0);
     
     unless (exists $hourly_map{$hour_epoch}) {
       $hourly_map{$hour_epoch} = {
@@ -475,7 +483,7 @@ eval { LOGINF("Total sorted intervals: " . scalar(@sorted)); 1; };
 # --------------------------
 # Build canonical tariff data
 # --------------------------
-my $canonical = build_canonical_tariff_data(\@sorted, $pub_ts);
+my $canonical = build_canonical_tariff_data(\@sorted, $pub_ts, ($cfg->{include_fixed_fees_in_total} ? 1 : 0));
 
 # Extract data for use in rest of script
 my $intervals_raw = $canonical->{intervals_raw};
