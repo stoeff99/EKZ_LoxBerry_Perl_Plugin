@@ -188,6 +188,19 @@ Tariffs JSON is persisted in:
 - `/opt/loxberry/data/plugins/ekz_plugin/tariffs_latest.json`
 - Plus windowed files named with the fetch interval.
 
+### How the published price is calculated
+
+`total_chf` (intervals), `avg_total_chf` (hourly/relative) and the chart show the **energy price in CHF/kWh**:
+the sum of the `CHF_kWh` components (electricity + grid + regional fees + metering, or integrated + regional
+fees + metering). This matches the price shown by EKZ and Loxone.
+
+Monthly fixed fees (`CHF_M`, e.g. metering) are **not** included. They do not depend on when or how much
+energy is used, so they cannot be expressed per kWh and would only shift every interval by a constant.
+For information they are still reported separately as `chf_m_per_hour`. To track total cost, add the
+monthly fee separately (e.g. fee ÷ days in month per day) to Σ(kWh × price).
+
+The old behaviour can be restored with `"include_fixed_fees_in_total": true` in the config (not recommended).
+
 ---
 
 ## Scheduling (cron)
